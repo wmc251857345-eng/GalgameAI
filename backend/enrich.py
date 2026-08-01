@@ -3,6 +3,7 @@
 """
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -267,12 +268,13 @@ def analyze_all(cfg, db):
 
 
 def fill_covers_all(cfg, db):
-    """批量补封面：status=2 且无本地封面的游戏，vndb_id 精确取 → bgm 搜索兜底。"""
+    """批量补封面：status=2 且无本地封面的游戏。
+    优先级: vndb_id 精确 → bgm_id 精确 → 标题链[日文名→英文名→中文名→文件夹名] 搜 vndb→bgm。
+    """
     if STATE["running"]:
         return
     _set(running=True, stage="covers", total=0, done=0, current="", error=None)
     try:
-        from .providers import bgm, vndb
         games = db.query(
             "SELECT * FROM games WHERE status=2 AND (cover_path IS NULL OR cover_path='') ORDER BY id")
         _set(total=len(games))
@@ -281,18 +283,7 @@ def fill_covers_all(cfg, db):
             if not STATE["running"]:
                 break
             _set(current=g["title"], done=done)
-            url = None
-            if g.get("vndb_id"):
-                cand, _ = vndb.get(cfg, g["vndb_id"])
-                if cand and cand.get("cover_url"):
-                    url = cand["cover_url"]
-            if not url:
-                try:
-                    cands = bgm.search(cfg, g.get("title") or g.get("title_jp") or "")
-                    if cands and cands[0].get("cover_url"):
-                        url = cands[0]["cover_url"]
-                except Exception:
-                    pass
+            url = _find_cover_url(cfg, g, db)
             if url:
                 rel = download_cover(cfg, g["id"], url)
                 if rel:
@@ -307,3 +298,79 @@ def fill_covers_all(cfg, db):
         _set(error=str(e))
     finally:
         _set(running=False, stage="idle", current="", done=STATE["total"])
+
+
+def _find_cover_url(cfg, g, db=None):
+    """按优先级找一个封面 URL：vndb_id 精确 → bgm_id 精确 → 标题链搜索 → 历史候选兜底。"""
+    from .providers import bgm, vndb
+    if g.get("vndb_id"):
+        cand, _ = vndb.get(cfg, g["vndb_id"])
+        if cand and cand.get("cover_url"):
+            return cand["cover_url"]
+    if g.get("bgm_id"):
+        cand = bgm.get(cfg, str(g["bgm_id"]))
+        if cand and cand.get("cover_url"):
+            return cand["cover_url"]
+    # 标题链：日文原名 → 英文名 → 中文名 → 文件夹名（每个都展开成多个搜索变体）
+    keys = []
+    for k in ("title_jp", "title_en", "title"):
+        v = (g.get(k) or "").strip()
+        if v and v not in keys:
+            keys.append(v)
+    folder = os.path.basename(g.get("path") or "").strip()
+    if folder and folder not in keys:
+        keys.append(folder)
+    variants = []
+    for key in keys:
+        for v in _expand_keys(key):
+            if v not in variants:
+                variants.append(v)
+    for kv in variants[:12]:
+        try:
+            cands, _ = vndb.search(cfg, kv, limit=4)
+            for c in cands:
+                if c.get("cover_url"):
+                    return c["cover_url"]
+        except Exception:
+            pass
+        try:
+            cands = bgm.search(cfg, kv)
+            for c in cands:
+                if c.get("cover_url"):
+                    return c["cover_url"]
+        except Exception:
+            pass
+    # 兜底：历史匹配候选里的封面 URL（零成本，本地已有）
+    if db:
+        for row in db.query(
+                "SELECT payload FROM match_candidates WHERE game_id=? ORDER BY score DESC",
+                (g.get("id"),)):
+            try:
+                p = json.loads(row["payload"])
+                if p.get("cover_url"):
+                    return p["cover_url"]
+            except Exception:
+                continue
+    return None
+
+
+def _expand_keys(key):
+    """搜索变体展开：下划线→空格、camelCase 拆词、去 ～副标题～、去版本号、截断长标题。"""
+    out = [key]
+    k = (key or "").strip()
+    if not k:
+        return out
+    k = k.replace("_", " ")
+    k = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", k)   # JerezArena → Jerez Arena
+    variants = [k]
+    variants.append(re.sub(r"[～〜~].*", "", k).strip())          # 去副标题
+    variants.append(re.sub(r"[\s\-·•]*[vV]?\d+(\.\d+)*$", "", k).strip())  # 去版本号
+    words = re.split(r"[\s\-·•]+", k)
+    if len(words) > 2:
+        variants.append(" ".join(words[:2]))
+        variants.append(" ".join(words[:3]))
+    for v in variants:
+        v = v.strip()
+        if v and v not in out:
+            out.append(v)
+    return out

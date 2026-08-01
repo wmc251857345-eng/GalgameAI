@@ -7,6 +7,42 @@ API = "https://api.bgm.tv"
 _unreachable = False  # 熔断：不可达后本次会话不再尝试
 
 
+def get(cfg, bgm_id):
+    """按 ID 精确获取条目（用于已入库游戏刷新/补封面）。返回统一候选结构或 None。"""
+    global _unreachable
+    if _unreachable:
+        return None
+    ip = doh_resolve("api.bgm.tv")
+    if ip:
+        patch_dns("api.bgm.tv", ip)
+    s = http_session(cfg, proxy_ok=True)
+    try:
+        data = http_get_json(s, f"{API}/subject/{bgm_id}",
+                             params={"responseGroup": "large"}, timeout=10, tries=1)
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get("id"):
+        return None
+    images = data.get("images") or {}
+    producers = data.get("producer")
+    maker = ""
+    if isinstance(producers, list) and producers:
+        maker = producers[0].get("name") or ""
+    return {
+        "provider": "bgm",
+        "external_id": str(data.get("id", "")),
+        "title": data.get("name_cn") or data.get("name") or "",
+        "title_orig": data.get("name") or "",
+        "aliases": [],
+        "maker": maker,
+        "released": (data.get("date") or "")[:10],
+        "rating": (data.get("rating") or {}).get("score"),
+        "cover_url": images.get("large") or images.get("common") or "",
+        "summary": (data.get("summary") or "")[:800],
+        "tags": [t.get("name", "") for t in (data.get("tags") or [])][:10],
+    }
+
+
 def search(cfg, keyword, limit=8):
     """搜索游戏类条目(type=4)，返回统一候选结构。"""
     global _unreachable

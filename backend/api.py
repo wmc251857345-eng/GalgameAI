@@ -353,39 +353,15 @@ class JsApi:
 
     # ---------- 封面维护 ----------
     def refresh_cover(self, game_id):
-        """单个游戏补封面：vndb_id 精确取 → 否则 bgm 搜索 → 否则用候选里的封面。"""
+        """单个游戏补封面：vndb_id 精确 → bgm_id 精确 → 标题链搜索（同批量逻辑）。"""
         from . import enrich
-        from .providers import bgm, vndb
         gid = int(game_id)
         g = self._db.query_one("SELECT * FROM games WHERE id=?", (gid,))
         if not g:
             return {"ok": False, "error": "游戏不存在"}
-        url = None
-        if g.get("vndb_id"):
-            cand, _ = vndb.get(self._cfg, g["vndb_id"])
-            if cand and cand.get("cover_url"):
-                url = cand["cover_url"]
+        url = enrich._find_cover_url(self._cfg, g, self._db)
         if not url:
-            try:
-                kw = g.get("title") or g.get("title_jp") or ""
-                cands = bgm.search(self._cfg, kw)
-                if cands and cands[0].get("cover_url"):
-                    url = cands[0]["cover_url"]
-            except Exception:
-                pass
-        if not url:
-            for c in self._db.query(
-                    "SELECT payload FROM match_candidates WHERE game_id=? ORDER BY score DESC",
-                    (gid,)):
-                try:
-                    p = json.loads(c["payload"])
-                    if p.get("cover_url"):
-                        url = p["cover_url"]
-                        break
-                except Exception:
-                    continue
-        if not url:
-            return {"ok": False, "error": "没有可用封面来源（无 vndb/bgm/候选封面）"}
+            return {"ok": False, "error": "没有可用封面来源（vndb/bgm 都搜不到封面）"}
         rel = enrich.download_cover(self._cfg, gid, url)
         if not rel:
             return {"ok": False, "error": "封面下载失败"}
