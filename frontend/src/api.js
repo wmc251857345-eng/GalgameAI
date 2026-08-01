@@ -50,6 +50,7 @@ const MOCK_CONFIG = {
   library_roots: [],
   ui: { theme: 'dark', language: 'zh-CN' },
   analysis: { auto_confirm_threshold: 0.9, concurrency: 2 },
+  backup: { auto_enabled: true, interval_days: 7 },
 }
 
 const MOCK_PENDING = MOCK_GAMES.filter((g) => g.status === 1).map((g) => ({
@@ -252,5 +253,45 @@ export const api = {
     if (hasBridge()) return window.pywebview.api.backup_db()
     await delay()
     return { ok: true, path: '(mock)' }
+  },
+
+  // 收藏 / 筛选维度 / 维护
+  async toggleFavorite(id) {
+    if (hasBridge()) return window.pywebview.api.toggle_favorite(id)
+    await delay()
+    return { ok: true, favorite: true }
+  },
+
+  async getLibraryFacets() {
+    if (hasBridge()) return window.pywebview.api.get_library_facets()
+    await delay()
+    return {
+      tags: [...new Set(MOCK_GAMES.flatMap((g) => g.tags || []))].slice(0, 12).map((t) => ({ name: t, c: 1 })),
+      makers: [...new Set(MOCK_GAMES.map((g) => g.maker).filter(Boolean))].slice(0, 10).map((m) => ({ maker: m, c: 1 })),
+      years: [...new Set(MOCK_GAMES.map((g) => g.year).filter(Boolean))].map((y) => ({ y, c: 1 })),
+    }
+  },
+
+  async testConnection() {
+    if (hasBridge()) return window.pywebview.api.test_connection()
+    await delay(500)
+    return { bgm: { ok: true, ms: 120 }, vndb: { ok: true, ms: 900 }, llm: { ok: true, ms: 800 } }
+  },
+
+  async getMissingPaths() {
+    if (hasBridge()) return window.pywebview.api.get_missing_paths()
+    await delay()
+    return []
+  },
+
+  async relocateGame(id) {
+    if (hasBridge()) return window.pywebview.api.relocate_game(id)
+    await delay()
+    return { ok: true }
+  },
+
+  async cancelTask() {
+    if (hasBridge()) return window.pywebview.api.cancel_task()
+    return { ok: true }
   },
 }

@@ -8,6 +8,13 @@ export const useLibraryStore = defineStore('library', {
     loading: false,
     search: '',
     sort: 'title',
+    filterStatus: 'all',   // all | 2(已入库) | 1(待确认) | 3(已跳过) | fav(收藏)
+    filterTag: '',
+    filterMaker: '',
+    filterYear: '',
+    viewMode: 'grid',      // grid | list
+    facets: { tags: [], makers: [], years: [] },
+    missingPaths: [],
     currentView: 'library', // library | detail | pending | stats | settings
     selectedGameId: null,
     detail: null,
@@ -32,11 +39,20 @@ export const useLibraryStore = defineStore('library', {
           (g.tags || []).join(' ').toLowerCase().includes(q),
         )
       }
+      if (state.filterStatus === 'fav') list = list.filter((g) => g.favorite)
+      else if (state.filterStatus !== 'all') list = list.filter((g) => g.status === state.filterStatus)
+      if (state.filterTag) list = list.filter((g) => (g.tags || []).includes(state.filterTag))
+      if (state.filterMaker) list = list.filter((g) => g.maker === state.filterMaker)
+      if (state.filterYear) list = list.filter((g) => String(g.released || '').startsWith(state.filterYear))
       const sort = state.sort
       return [...list].sort((a, b) => {
         if (sort === 'playtime') return (b.playtime_hours || 0) - (a.playtime_hours || 0)
         if (sort === 'score') return (b.score || 0) - (a.score || 0)
         if (sort === 'year') return String(b.released || '').localeCompare(String(a.released || ''))
+        if (sort === 'favorite') {
+          return ((b.favorite || 0) - (a.favorite || 0)) ||
+            String(a.title || '').localeCompare(String(b.title || ''), 'zh-Hans-CN')
+        }
         return String(a.title || '').localeCompare(String(b.title || ''), 'zh-Hans-CN')
       })
     },
@@ -46,12 +62,44 @@ export const useLibraryStore = defineStore('library', {
     async load() {
       this.loading = true
       try {
-        const [games, summary] = await Promise.all([api.listGames(), api.getLibrarySummary()])
+        const [games, summary, facets] = await Promise.all([
+          api.listGames(), api.getLibrarySummary(), api.getLibraryFacets(),
+        ])
         this.games = games
         this.summary = summary
+        this.facets = facets
       } finally {
         this.loading = false
       }
+    },
+
+    async toggleFavorite(g) {
+      const r = await api.toggleFavorite(g.id)
+      if (r && r.ok) {
+        g.favorite = r.favorite
+        if (this.detail && this.detail.id === g.id) this.detail.favorite = r.favorite
+      }
+    },
+
+    randomGame() {
+      const list = this.filteredGames
+      if (!list.length) return null
+      return list[Math.floor(Math.random() * list.length)]
+    },
+
+    async loadMissing() {
+      this.missingPaths = await api.getMissingPaths()
+    },
+
+    async relocateGame(id) {
+      const r = await api.relocateGame(id)
+      if (r && r.ok) {
+        await Promise.all([this.load(), this.loadMissing()])
+        if (this.detail && this.detail.id === id) this.refreshDetail()
+        return true
+      }
+      alert(r?.error || '重定位失败')
+      return false
     },
 
     // ---- 详情 ----
@@ -114,6 +162,10 @@ export const useLibraryStore = defineStore('library', {
       const r = await api.analyzePending()
       if (r && !r.ok) alert(r.error)
       this.pollScan()
+    },
+
+    async cancelTask() {
+      await api.cancelTask()
     },
 
     pollScan() {

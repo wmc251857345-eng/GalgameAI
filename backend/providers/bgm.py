@@ -59,6 +59,8 @@ def search(cfg, keyword, limit=8):
     except Exception:
         _unreachable = True  # 网络不通 → 熔断
         return []
+    if isinstance(data, dict):  # BGM 返回 {"results":N, "list":[...]}，不是裸列表
+        data = data.get("list") or []
     if not isinstance(data, list):
         return []
     out = []

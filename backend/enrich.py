@@ -191,9 +191,29 @@ def _ai_identify(cfg, db, game):
 
 
 def _analyze_one(cfg, db, game):
-    """AI 识别为主，bgm/vndb 尽力而为。"""
+    """识别流程：用户纠正记忆(match_cache) → AI 识别 → bgm/vndb 候选。"""
     from .matcher import match
+    from .providers import bgm, vndb
+    from .utils import normalize
     thr = cfg.get("analysis.auto_confirm_threshold", 0.9)
+
+    # 0) 记忆命中：用户以前确认/纠正过这个文件夹 → 直接精确获取，不再问 AI
+    folder_key = normalize(os.path.basename(game.get("path") or ""))
+    if folder_key:
+        mc = db.query_one(
+            "SELECT vndb_id, provider FROM match_cache WHERE folder_key=?", (folder_key,))
+        if mc and mc.get("vndb_id"):
+            cand = None
+            if (mc.get("provider") or "vndb") == "bgm":
+                cand = bgm.get(cfg, mc["vndb_id"])
+            else:
+                cand, _ = vndb.get(cfg, mc["vndb_id"])
+            if cand:
+                cand["score"] = 1.0
+                cand["provider"] = mc.get("provider") or "vndb"
+                cand["external_id"] = mc["vndb_id"]
+                _apply_match(cfg, db, game, cand)
+                return {"status": 2, "matched": cand.get("title"), "score": 1.0, "from_cache": True}
 
     ai_cand = _ai_identify(cfg, db, game)
     web_cands = []
@@ -225,11 +245,14 @@ def _analyze_one(cfg, db, game):
 def scan_all(cfg, db):
     if STATE["running"]:
         return
-    _set(running=True, stage="scan", total=0, done=0, current="", error=None, log=[])
+    _set(running=True, stage="scan", total=0, done=0, current="", error=None, cancel_requested=False)
     try:
         from .scanner import scan_root
         roots = cfg.get("library_roots", [])
         for root in roots:
+            if STATE.get("cancel_requested"):
+                _log("扫描已取消")
+                break
             if not os.path.isdir(root):
                 _log(f"跳过不存在的目录: {root}")
                 continue
@@ -245,12 +268,12 @@ def scan_all(cfg, db):
 def analyze_all(cfg, db):
     if STATE["running"]:
         return
-    _set(running=True, stage="analyze", total=0, done=0, current="", error=None)
+    _set(running=True, stage="analyze", total=0, done=0, current="", error=None, cancel_requested=False)
     try:
         games = db.query("SELECT * FROM games WHERE status IN (0,1) ORDER BY id")
         _set(total=len(games))
         for i, g in enumerate(games, 1):
-            if not STATE["running"]:  # 允许停止
+            if not STATE["running"] or STATE.get("cancel_requested"):  # 允许停止/取消
                 break
             _set(current=g["title"], done=i - 1)
             try:
@@ -273,14 +296,14 @@ def fill_covers_all(cfg, db):
     """
     if STATE["running"]:
         return
-    _set(running=True, stage="covers", total=0, done=0, current="", error=None)
+    _set(running=True, stage="covers", total=0, done=0, current="", error=None, cancel_requested=False)
     try:
         games = db.query(
             "SELECT * FROM games WHERE status=2 AND (cover_path IS NULL OR cover_path='') ORDER BY id")
         _set(total=len(games))
         done = 0
         for g in games:
-            if not STATE["running"]:
+            if not STATE["running"] or STATE.get("cancel_requested"):
                 break
             _set(current=g["title"], done=done)
             url = _find_cover_url(cfg, g, db)

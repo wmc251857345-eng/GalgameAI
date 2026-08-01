@@ -100,7 +100,18 @@ class Database:
                 conn.commit()
             conn.executescript(_SCHEMA)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self._migrate(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate(conn):
+        """无损迁移：已有库补新列（不重建表、不丢数据）。"""
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(games)")}
+        if "favorite" not in cols:
+            conn.execute("ALTER TABLE games ADD COLUMN favorite INTEGER DEFAULT 0")
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(match_cache)")}
+        if "provider" not in cols:
+            conn.execute("ALTER TABLE match_cache ADD COLUMN provider TEXT DEFAULT 'vndb'")
 
     def query(self, sql, params=()):
         with self._lock:

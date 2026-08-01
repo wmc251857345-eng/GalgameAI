@@ -19,6 +19,7 @@ DEFAULTS = {
     "library_roots": [],
     "ui": {"theme": "dark", "language": "zh-CN"},
     "analysis": {"auto_confirm_threshold": 0.9, "concurrency": 2},
+    "backup": {"auto_enabled": True, "interval_days": 7},
 }
 
 

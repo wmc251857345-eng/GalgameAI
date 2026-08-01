@@ -62,6 +62,16 @@
           <input v-model="cfg.proxy.url" placeholder="http://127.0.0.1:7897" />
         </div>
         <p class="hint">代理仅用于 VNDB/AI 中转；Bangumi 走国内直连。</p>
+        <div class="row" style="margin-top: 10px">
+          <button class="btn small" :disabled="testing" @click="runTest">
+            🔌 {{ testing ? '测试中…' : '测试连接' }}
+          </button>
+          <span v-if="connResult" class="conn-result">
+            <span v-for="(v, k) in connResult" :key="k" class="conn-item" :class="connClass(v)">
+              {{ connLabel[k] }}: {{ connText(v) }}
+            </span>
+          </span>
+        </div>
       </section>
 
       <!-- 游戏库 -->
@@ -90,11 +100,23 @@
           </button>
           <button class="btn small" @click="exportGames">📤 导出库 JSON</button>
           <button class="btn small" @click="backupDb">💾 备份数据库</button>
+          <button class="btn small" @click="checkMissing">🔍 检查失效路径</button>
         </div>
         <div v-if="taskMsg" class="hint" style="margin-top: 8px">{{ taskMsg }}</div>
         <div v-if="store.scan.running" class="progress-card">
           <div class="progress-bar"><div class="progress-fill" :style="{ width: progressPct + '%' }"></div></div>
           <div class="progress-text">{{ stageLabel }}：{{ store.scan.current }}（{{ store.scan.done }}/{{ store.scan.total }}）</div>
+          <div style="margin-top: 8px">
+            <button class="btn small danger-soft" @click="cancelTask">■ 取消任务</button>
+          </div>
+        </div>
+        <div v-if="store.missingPaths.length" class="missing-list">
+          <div class="hint" style="margin-bottom: 6px">以下游戏 exe 已失效（移动/重命名过）：</div>
+          <div v-for="m in store.missingPaths" :key="m.id" class="missing-row">
+            <span class="missing-title">{{ m.title }}</span>
+            <span class="missing-path">{{ m.exe_path || m.path }}</span>
+            <button class="btn small" @click="relocateOne(m)">📂 重新定位</button>
+          </div>
         </div>
         <div v-if="store.scan.log.length" class="progress-log">
           <div v-for="(l, i) in store.scan.log.slice(-8)" :key="i">{{ l }}</div>
@@ -114,6 +136,20 @@
           <input v-model.number="cfg.analysis.concurrency" type="number" min="1" max="8" style="flex: 0 0 80px" />
         </div>
         <p class="hint">阈值越高越严格：≥阈值自动入库，否则进待确认。</p>
+      </section>
+
+      <!-- 备份 -->
+      <section class="card">
+        <h2>备份</h2>
+        <div class="row">
+          <label>启动时自动备份</label>
+          <input v-model="cfg.backup.auto_enabled" type="checkbox" />
+        </div>
+        <div class="row">
+          <label>备份间隔（天）</label>
+          <input v-model.number="cfg.backup.interval_days" type="number" min="1" max="90" style="flex: 0 0 80px" />
+        </div>
+        <p class="hint">自动备份保存在 database/backup/auto_*，保留最近 10 份；手动备份按钮见上方。</p>
       </section>
 
       <div class="actions">
@@ -138,6 +174,16 @@ const saved = ref(false)
 const bridgeMode = ref('')
 const newRoot = ref('')
 const taskMsg = ref('')
+const testing = ref(false)
+const connResult = ref(null)
+const connLabel = { bgm: 'Bangumi', vndb: 'VNDB', llm: 'AI' }
+
+const connClass = (v) => (v.ok === true ? 'ok' : v.ok === false ? 'fail' : 'skip')
+const connText = (v) => {
+  if (v.ok === true) return `✓ ${v.ms}ms`
+  if (v.ok === false) return `✗ ${v.ms}ms${v.error ? ' ' + v.error : ''}`
+  return v.note || '未配置'
+}
 
 const stageLabel = computed(
   () => ({ scan: '扫描', analyze: 'AI分析', covers: '补封面' }[store.scan.stage] || store.scan.stage),
@@ -167,6 +213,7 @@ onMounted(async () => {
       : `已连接后端 (Python ${info.python})`
   cfg.value = await api.getConfig()
   await store.loadRoots()
+  await store.loadMissing()
 })
 
 async function addRoot() {
@@ -208,12 +255,42 @@ async function backupDb() {
   taskMsg.value = r?.ok ? `备份完成 → ${r.path}` : (r?.error || '备份失败')
 }
 
+async function checkMissing() {
+  await save()
+  await store.loadMissing()
+  taskMsg.value = store.missingPaths.length
+    ? `发现 ${store.missingPaths.length} 个失效游戏，可在下方重新定位`
+    : '所有游戏的 exe 路径均有效 ✓'
+}
+
+async function relocateOne(m) {
+  if (await store.relocateGame(m.id)) {
+    taskMsg.value = `已重新定位「${m.title}」`
+  }
+}
+
+async function cancelTask() {
+  await store.cancelTask()
+  taskMsg.value = '已请求取消，当前任务将在下个循环点停止…'
+}
+
+async function runTest() {
+  await save()
+  testing.value = true
+  try {
+    connResult.value = await api.testConnection()
+  } finally {
+    testing.value = false
+  }
+}
+
 async function save() {
   saving.value = true
   try {
     await api.setConfig('provider', cfg.value.provider)
     await api.setConfig('proxy', cfg.value.proxy)
     await api.setConfig('analysis', cfg.value.analysis)
+    await api.setConfig('backup', cfg.value.backup)
     await api.setConfig('vndb_token', cfg.value.vndb_token || '')
     saved.value = true
     setTimeout(() => (saved.value = false), 2000)

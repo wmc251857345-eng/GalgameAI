@@ -9,6 +9,7 @@ import os
 import socketserver
 import sys
 import threading
+import time
 
 from . import paths
 
@@ -30,6 +31,63 @@ def start_http_server():
     httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd.server_address[1]
+
+
+def _startup_tasks(cfg, db):
+    """后台启动任务：游玩时长补记 + 自动备份。"""
+    time.sleep(3)
+    try:
+        from . import launcher
+        launcher.reconcile(db)
+    except Exception as e:
+        print(f"[GALA] 时长补记: {e}")
+    try:
+        from .api import maybe_auto_backup
+        maybe_auto_backup(cfg, db)
+    except Exception as e:
+        print(f"[GALA] 自动备份: {e}")
+
+
+def _start_tray(window):
+    """系统托盘：显示/隐藏 + 退出。关窗默认最小化到托盘（closing 事件返回 False 取消关闭）。"""
+    try:
+        from PIL import Image, ImageDraw
+        import pystray
+    except Exception as e:
+        print(f"[GALA] 托盘不可用: {e}")
+        return
+    img = Image.new("RGBA", (64, 64), (23, 26, 33, 255))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([6, 6, 58, 58], radius=12, fill=(102, 192, 244, 255))
+    d.polygon([(24, 20), (24, 44), (46, 32)], fill=(16, 19, 25, 255))
+
+    quit_flag = {"q": False}
+
+    def on_toggle(icon, item):
+        if window.hidden:
+            window.show()
+        else:
+            window.hide()
+
+    def on_quit(icon, item):
+        quit_flag["q"] = True
+        icon.stop()
+        window.destroy()
+
+    menu = pystray.Menu(
+        pystray.MenuItem("显示 / 隐藏 GALA", on_toggle, default=True),
+        pystray.MenuItem("退出", on_quit),
+    )
+    icon = pystray.Icon("gala", img, "GALA — Galgame AI Library", menu)
+
+    def on_closing():
+        if not quit_flag["q"]:
+            window.hide()  # 关窗 → 缩到托盘
+            return False
+        return None  # 允许真正退出
+
+    window.events.closing += on_closing
+    icon.run_detached()
 
 
 def main():
@@ -74,6 +132,10 @@ def main():
         background_color="#171a21",
     )
     jsapi._window = window  # 供文件对话框等使用
+
+    threading.Thread(target=_startup_tasks, args=(cfg, db), daemon=True).start()
+    _start_tray(window)
+
     webview.start()
     print("[GALA] 已退出")
 

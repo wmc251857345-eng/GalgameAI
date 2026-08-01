@@ -8,7 +8,7 @@ import threading
 import time
 
 from . import launcher, paths
-from .utils import now_iso
+from .utils import normalize, now_iso
 
 VERSION = "0.2.0"
 BASE_URL = "http://127.0.0.1:0"  # app.py 启动 HTTP 服务后写入
@@ -33,6 +33,54 @@ def _cover_url(path):
     return f"{BASE_URL}/{p}"
 
 
+def _do_backup(db, out_dir):
+    """执行备份：library.db（sqlite 在线备份）+ config.json。返回 out_dir。"""
+    import shutil
+    os.makedirs(out_dir, exist_ok=True)
+    dest = os.path.join(out_dir, "library.db")
+    conn = db.connect()
+    with db._lock:
+        target = sqlite3.connect(dest)
+        try:
+            conn.backup(target)
+        finally:
+            target.close()
+    try:
+        shutil.copyfile(paths.CONFIG_FILE, os.path.join(out_dir, "config.json"))
+    except OSError:
+        pass
+    return out_dir
+
+
+def maybe_auto_backup(cfg, db):
+    """启动时按间隔自动备份（database/backup/auto_*，保留最近 10 份）。"""
+    if not cfg.get("backup.auto_enabled", True):
+        return
+    interval = max(1, int(cfg.get("backup.interval_days", 7)))
+    last = db.query_one("SELECT value FROM settings WHERE key='last_backup'")
+    now = time.time()
+    if last and last.get("value"):
+        try:
+            if now - float(last["value"]) < interval * 86400:
+                return
+        except ValueError:
+            pass
+    try:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        _do_backup(db, os.path.join(paths.BASE, "database", "backup", "auto_" + ts))
+        db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_backup', ?)",
+                   (str(now),))
+        auto_dirs = sorted(
+            d for d in os.listdir(os.path.join(paths.BASE, "database", "backup"))
+            if d.startswith("auto_"))
+        for old in auto_dirs[:-10]:
+            import shutil as _sh
+            _sh.rmtree(os.path.join(paths.BASE, "database", "backup", old), ignore_errors=True)
+        print(f"[GALA] 自动备份完成")
+    except Exception as e:
+        print(f"[GALA] 自动备份失败: {e}")
+
+
 def _rating_disp(r):
     """VNDB 原始评分是 0-100 制，展示统一转 10 分制（<=20 视为已是 10 分制）。"""
     if isinstance(r, (int, float)) and r > 20:
@@ -55,6 +103,7 @@ def _game_row(g, db, with_extra=False):
     row["rating_disp"] = _rating_disp(g.get("rating"))
     row["score"] = row["rating_disp"]            # 网格卡片 hover 用
     row["hue"] = (int(g["id"] or 0) * 47) % 360  # 无封面时占位渐变主色
+    row["exe_exists"] = bool(g.get("exe_path")) and os.path.exists(g["exe_path"])
     row["playtime_hours"] = round((g.get("playtime_seconds") or 0) / 3600, 1)
     if with_extra:
         row["tags"] = [t["name"] for t in _tags(db, g["id"])]
@@ -109,7 +158,42 @@ class JsApi:
             params = [f"%{query}%"] * 4
         sql += f" ORDER BY {order} LIMIT ? OFFSET ?"
         params += [int(limit), int(offset)]
-        return [_game_row(g, self._db) for g in self._db.query(sql, params)]
+        rows = self._db.query(sql, params)
+        # 一次性取所有标签并挂到对应游戏上（避免 N+1 查询）
+        tag_map = {}
+        for t in self._db.query(
+                "SELECT gt.game_id, t.name FROM game_tags gt JOIN tags t ON t.id=gt.tag_id"
+                " ORDER BY gt.rowid"):
+            tag_map.setdefault(t["game_id"], []).append(t["name"])
+        out = []
+        for g in rows:
+            row = _game_row(g, self._db)
+            row["tags"] = tag_map.get(g["id"], [])
+            out.append(row)
+        return out
+
+    def get_library_facets(self):
+        """筛选维度：标签 / 厂商 / 年份（含计数，供前端 chips/下拉）。"""
+        tags = self._db.query(
+            "SELECT t.name, COUNT(*) c FROM tags t JOIN game_tags gt ON t.id=gt.tag_id"
+            " GROUP BY t.id ORDER BY c DESC, t.name LIMIT 40")
+        makers = self._db.query(
+            "SELECT maker, COUNT(*) c FROM games WHERE maker IS NOT NULL AND maker != ''"
+            " GROUP BY maker ORDER BY c DESC LIMIT 40")
+        years = self._db.query(
+            "SELECT substr(released,1,4) y, COUNT(*) c FROM games"
+            " WHERE released IS NOT NULL AND released != ''"
+            " GROUP BY y ORDER BY y DESC")
+        return {"tags": tags, "makers": makers, "years": years}
+
+    def toggle_favorite(self, game_id):
+        gid = int(game_id)
+        g = self._db.query_one("SELECT favorite FROM games WHERE id=?", (gid,))
+        if not g:
+            return {"ok": False, "error": "游戏不存在"}
+        nv = 0 if g["favorite"] else 1
+        self._db.execute("UPDATE games SET favorite=? WHERE id=?", (nv, gid))
+        return {"ok": True, "favorite": nv}
 
     def get_game(self, game_id):
         g = self._db.query_one("SELECT * FROM games WHERE id=?", (int(game_id),))
@@ -202,11 +286,104 @@ class JsApi:
         cand["provider"] = c["provider"]
         cand["external_id"] = c["external_id"]
         enrich._apply_match(self._cfg, self._db, game, cand)
+        # 写入匹配记忆：用户确认过 → 下次重扫同一文件夹直接命中
+        fk = normalize(os.path.basename(game.get("path") or ""))
+        if fk:
+            self._db.execute(
+                "INSERT OR REPLACE INTO match_cache"
+                " (folder_key, vndb_id, provider, confidence, chosen_by_user, updated_at)"
+                " VALUES (?,?,?,?,1,?)",
+                (fk, external_id, provider, c["score"], now_iso()))
         return {"ok": True}
 
     def mark_unmatched(self, game_id):
         self._db.execute("UPDATE games SET status=3, source='manual' WHERE id=?", (int(game_id),))
         return {"ok": True}
+
+    def cancel_task(self):
+        """取消进行中的扫描/AI分析/补封面任务（下个循环点生效）。"""
+        from . import enrich
+        enrich.STATE["cancel_requested"] = True
+        return {"ok": True}
+
+    def test_connection(self):
+        """连接自检：BGM 直连 / VNDB(有token) / LLM(有key)，逐项返回耗时。"""
+        from .providers import bgm, llm, vndb
+        res = {}
+
+        t0 = time.time()
+        try:
+            cands = bgm.search(self._cfg, "summer pockets", limit=1)
+            res["bgm"] = {"ok": len(cands) > 0, "ms": int((time.time() - t0) * 1000)}
+        except Exception as e:
+            res["bgm"] = {"ok": False, "ms": int((time.time() - t0) * 1000), "error": str(e)}
+
+        if self._cfg.get("vndb_token"):
+            t0 = time.time()
+            try:
+                cands, err = vndb.search(self._cfg, "summer pockets", limit=1)
+                res["vndb"] = {"ok": len(cands) > 0, "ms": int((time.time() - t0) * 1000),
+                               "error": err}
+            except Exception as e:
+                res["vndb"] = {"ok": False, "ms": int((time.time() - t0) * 1000), "error": str(e)}
+        else:
+            res["vndb"] = {"ok": None, "note": "未配置 VNDB token"}
+
+        if self._cfg.get("provider.api_key"):
+            t0 = time.time()
+            try:
+                resp, err = llm.chat(self._cfg,
+                                     [{"role": "user", "content": "只回复: pong"}],
+                                     json_mode=False, timeout=30)
+                res["llm"] = {"ok": resp is not None, "ms": int((time.time() - t0) * 1000),
+                              "model": self._cfg.get("provider.model"), "error": err}
+            except Exception as e:
+                res["llm"] = {"ok": False, "ms": int((time.time() - t0) * 1000), "error": str(e)}
+        else:
+            res["llm"] = {"ok": None, "note": "未配置 AI API Key"}
+
+        return res
+
+    # ---------- 失效路径 / 重定位 ----------
+    def get_missing_paths(self):
+        """返回 exe 或目录已失效的游戏列表（供重定位）。"""
+        out = []
+        for g in self._db.query("SELECT id, title, path, exe_path FROM games"):
+            row = {"id": g["id"], "title": g["title"], "path": g["path"],
+                   "exe_path": g["exe_path"]}
+            row["path_exists"] = bool(g["path"]) and os.path.isdir(g["path"])
+            row["exe_exists"] = bool(g["exe_path"]) and os.path.exists(g["exe_path"])
+            if not row["exe_exists"]:
+                out.append(row)
+        return out
+
+    def relocate_game(self, game_id):
+        """重新定位游戏目录：弹目录选择框 → 更新 path / exe / workdir。"""
+        import webview
+        gid = int(game_id)
+        g = self._db.query_one("SELECT * FROM games WHERE id=?", (gid,))
+        if not g:
+            return {"ok": False, "error": "游戏不存在"}
+        win = getattr(self, "_window", None)
+        if not win:
+            return {"ok": False, "error": "窗口未就绪"}
+        try:
+            result = win.create_file_dialog(webview.FOLDER_DIALOG)
+        except Exception as e:
+            return {"ok": False, "error": f"目录选择失败: {e}"}
+        if not result:
+            return {"ok": False, "error": "未选择目录"}
+        new_dir = os.path.abspath(result[0])
+        exe = None
+        if os.path.isdir(new_dir):
+            exes = [f for f in os.listdir(new_dir) if f.lower().endswith(".exe")]
+            if exes:
+                from .scanner import guess_main_exe
+                exe = os.path.join(new_dir, guess_main_exe(new_dir, os.path.basename(new_dir), exes))
+        self._db.execute(
+            "UPDATE games SET path=?, exe_path=?, workdir=?, source='manual' WHERE id=?",
+            (new_dir, exe, new_dir, gid))
+        return {"ok": True, "path": new_dir, "exe_path": exe}
 
     def reanalyze_game(self, game_id):
         """已入库(2)：从 VNDB 刷新 + AI 重新润色；未确认(0/1)：完整重新识别。"""
@@ -252,6 +429,7 @@ class JsApi:
         "title", "title_jp", "title_en", "title_zh", "maker", "brand",
         "released", "rating", "length_minutes", "length_level", "description",
         "exe_path", "workdir", "launch_args", "use_locale_emu", "hanhua", "status",
+        "favorite", "vndb_id",
     }
 
     def update_game(self, game_id, fields):
@@ -276,6 +454,15 @@ class JsApi:
         sets = ", ".join(f"{k}=?" for k in clean)
         params = list(clean.values()) + [gid]
         self._db.execute(f"UPDATE games SET {sets}, source='manual' WHERE id=?", params)
+        # 用户手动指定/改了 vndb_id → 写入匹配记忆（下次重扫直接命中）
+        if clean.get("vndb_id") and game.get("path"):
+            fk = normalize(os.path.basename(game["path"]))
+            if fk:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO match_cache"
+                    " (folder_key, vndb_id, provider, confidence, chosen_by_user, updated_at)"
+                    " VALUES (?,?,?,?,1,?)",
+                    (fk, clean["vndb_id"], "vndb", 1.0, now_iso()))
         return {"ok": True, "game": _game_row(self._db.query_one("SELECT * FROM games WHERE id=?", (gid,)), self._db)}
 
     def update_tags(self, game_id, tags):
@@ -400,22 +587,8 @@ class JsApi:
     def backup_db(self):
         """在线备份 library.db + config.json 到 database/backup/<时间戳>/。"""
         ts = time.strftime("%Y%m%d_%H%M%S")
-        out_dir = os.path.join(paths.BASE, "database", "backup", ts)
-        os.makedirs(out_dir, exist_ok=True)
-        dest = os.path.join(out_dir, "library.db")
-        conn = self._db.connect()
-        with self._db._lock:
-            target = sqlite3.connect(dest)
-            try:
-                conn.backup(target)
-            finally:
-                target.close()
-        try:
-            import shutil
-            shutil.copyfile(paths.CONFIG_FILE, os.path.join(out_dir, "config.json"))
-        except OSError:
-            pass
-        return {"ok": True, "path": out_dir}
+        out = _do_backup(self._db, os.path.join(paths.BASE, "database", "backup", ts))
+        return {"ok": True, "path": out}
 
     # ---------- 启动 / 时长 ----------
     def launch_game(self, game_id):

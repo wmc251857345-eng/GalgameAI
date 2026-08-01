@@ -14,6 +14,9 @@
       <div class="progress-bar"><div class="progress-fill" :style="{ width: progressPct + '%' }"></div></div>
       <div class="progress-text">{{ stageLabel }}：{{ store.scan.current }}（{{ store.scan.done }}/{{ store.scan.total }}）</div>
       <div class="progress-log"><div v-for="(l, i) in store.scan.log.slice(-6)" :key="i">{{ l }}</div></div>
+      <div style="margin-top: 8px">
+        <button class="btn small danger-soft" @click="store.cancelTask()">■ 取消任务</button>
+      </div>
     </div>
 
     <div v-if="store.pendingLoading" class="loading">加载中…</div>

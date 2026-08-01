@@ -32,6 +32,7 @@
             <tr><td>评分</td><td>{{ g.rating_disp != null ? '★ ' + g.rating_disp : '—' }}</td></tr>
             <tr><td>时长</td><td>{{ lengthText }}</td></tr>
             <tr><td>游玩</td><td>{{ g.playtime_hours }}h<template v-if="g.last_played"> · 最近 {{ g.last_played }}</template></td></tr>
+            <tr><td>体积</td><td>{{ sizeText }}</td></tr>
             <tr><td>本地路径</td><td class="path-cell">{{ g.path }}</td></tr>
             <tr v-if="g.exe_path"><td>启动 exe</td><td class="path-cell">{{ g.exe_path }}</td></tr>
             <tr><td>数据源</td><td>{{ sourceText }}<template v-if="g.vndb_id"> · {{ g.vndb_id }}</template></td></tr>
@@ -59,6 +60,9 @@
             <template v-if="!editing">
               <button v-if="!g.running" class="btn primary" @click="launch">▶ 启动游戏</button>
               <button v-else class="btn danger" @click="stop">■ 停止</button>
+              <button class="btn" :class="{ 'fav-on': g.favorite }" @click="toggleFav">
+                {{ g.favorite ? '♥ 已收藏' : '♡ 收藏' }}
+              </button>
               <button class="btn" @click="reanalyze">⟳ 重新 AI 分析</button>
               <button class="btn" @click="startEdit">✏ 编辑</button>
               <label class="le-toggle">
@@ -72,6 +76,12 @@
               <button class="btn" @click="cancelEdit">取消</button>
               <button class="btn danger" @click="del">🗑 删除游戏</button>
             </template>
+          </div>
+
+          <!-- exe 失效警告 -->
+          <div v-if="!editing && g.exe_path && !g.exe_exists" class="warn-banner">
+            <span>⚠ exe 不存在：{{ g.exe_path }}（游戏可能被移动/重命名）</span>
+            <button class="btn small" @click="relocate">📂 重新定位目录</button>
           </div>
         </div>
       </div>
@@ -169,6 +179,16 @@ const lengthText = computed(() => {
   const lv = g.value.length_level
   return { 1: '很短', 2: '短', 3: '中等', 4: '长', 5: '很长' }[lv] || '—'
 })
+
+const sizeText = computed(() => {
+  const b = g.value?.size_bytes
+  if (!b) return '—'
+  const gb = b / 1024 ** 3
+  if (gb >= 1) return gb.toFixed(2) + ' GB'
+  const mb = b / 1024 ** 2
+  if (mb >= 1) return Math.round(mb) + ' MB'
+  return Math.round(b / 1024) + ' KB'
+})
 const sourceText = computed(() => {
   const s = g.value?.source
   return { bgm: 'Bangumi', vndb: 'VNDB', ai: 'AI', manual: '手动编辑' }[s] || '本地扫描'
@@ -259,6 +279,17 @@ async function useCandCover(url) {
 }
 
 // ---- 动作 ----
+async function toggleFav() {
+  await store.toggleFavorite(g.value)
+  store.load()
+}
+
+async function relocate() {
+  if (await store.relocateGame(g.value.id)) {
+    await store.refreshDetail()
+  }
+}
+
 async function launch() {
   const r = await api.launchGame(g.value.id)
   if (r && !r.ok) alert(r.error)

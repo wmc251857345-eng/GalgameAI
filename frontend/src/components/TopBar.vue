@@ -10,6 +10,7 @@
       <option value="year">发售年份</option>
       <option value="playtime">游玩时长</option>
       <option value="score">评分</option>
+      <option value="favorite">收藏优先</option>
     </select>
   </header>
 </template>
