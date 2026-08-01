@@ -295,16 +295,22 @@ export const useLibraryStore = defineStore('library', {
     async openWorkDetail(vndbId) {
       if (!vndbId) return
       this.workDetail = { vndbId, work: null, loading: true, error: null, translating: false, translateError: null }
-      const r = await api.getWorkDetail(vndbId)
-      if (r && r.ok) {
-        this.workDetail.work = r.work
-        this.workDetail.loading = false
-        // 无中文 → 自动触发翻译
-        if (!r.work.zh_title && !r.work.zh_summary) {
-          this.triggerTranslate(vndbId)
+      try {
+        const r = await api.getWorkDetail(vndbId)
+        if (r && r.ok) {
+          this.workDetail.work = r.work
+          this.workDetail.loading = false
+          // 无中文 → 自动触发翻译
+          if (!r.work.zh_title && !r.work.zh_summary) {
+            this.triggerTranslate(vndbId)
+          }
+        } else {
+          this.workDetail.error = (r && r.error) || '加载失败'
+          this.workDetail.loading = false
         }
-      } else {
-        this.workDetail.error = (r && r.error) || '加载失败'
+      } catch (e) {
+        // 超时/异常 → 显示错误+重试，绝不永久转圈
+        this.workDetail.error = e.message || '加载失败（超时或网络异常）'
         this.workDetail.loading = false
       }
     },

@@ -2,6 +2,7 @@
 每个方法在 pywebview 独立线程调用，DB/Config 自带锁。
 """
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -837,12 +838,16 @@ class JsApi:
         return {"ok": True, "state": state, "releases": items}
 
     def get_work_detail(self, vndb_id):
-        """单作品详情：VNDB 全量字段 + 本地匹配 + 中文翻译缓存。"""
+        """单作品详情：VNDB 全量字段 + 本地匹配 + 中文翻译缓存（vndb.get 带 6h TTL）。"""
         from .providers import vndb
         vid = (vndb_id or "").strip()
         if not vid:
             return {"ok": False, "error": "缺少作品 ID"}
-        cand, err = vndb.get(self._cfg, vid)
+        try:
+            cand, err = vndb.get(self._cfg, vid)
+        except Exception as e:
+            logging.error("get_work_detail(%s) 异常: %s", vid, e)
+            return {"ok": False, "error": f"VNDB 请求异常: {e}"}
         if err or not cand:
             return {"ok": False, "error": err or "VNDB 无此作品"}
         owned = self._owned_vndb_set()
@@ -910,6 +915,27 @@ class JsApi:
     def get_translate_status(self):
         with _new_lock:
             return dict(_TRANSLATE_JOB)
+
+    # ---------- 日志 ----------
+    def log_error(self, message):
+        """前端错误上报（JS 异常/超时等），写入 logs/app.log 便于排查卡死。"""
+        msg = str(message or "")[:500]
+        if msg:
+            logging.error("[前端] %s", msg)
+        return {"ok": True}
+
+    def get_log_tail(self, lines=200):
+        """返回 logs/app.log 尾部（UI 查看日志用）。"""
+        lines = max(10, min(int(lines or 200), 1000))
+        try:
+            with open(os.path.join(paths.LOGS_DIR, "app.log"), "r", encoding="utf-8",
+                      errors="replace") as f:
+                tail = f.readlines()[-lines:]
+            return {"ok": True, "log": "".join(tail)}
+        except FileNotFoundError:
+            return {"ok": True, "log": "（暂无日志文件）"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def _apply_zh(self, works):
         """给作品实时应用最新中文标签 + 中文标题（后台翻译完成后刷新缓存命中）。"""

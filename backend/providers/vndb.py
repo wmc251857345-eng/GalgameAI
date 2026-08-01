@@ -10,15 +10,15 @@ _FIELDS = (
 )
 
 
-def _query(cfg, body):
-    """POST VNDB API，返回 results 列表。"""
+def _query(cfg, body, timeout=15, tries=2):
+    """POST VNDB API，返回 results 列表。（快失败：15s×2，避免桥接线程长时间挂起）"""
     token = cfg.get("vndb_token", "")
     if not token:
         return [], "未配置 VNDB token（设置页填写，可选）"
     s = http_session(cfg, proxy_ok=True)
     try:
         data = http_post_json(
-            s, f"{API}/vn", json_body=body, timeout=20,
+            s, f"{API}/vn", json_body=body, timeout=timeout, tries=tries,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Token {token}"})
     except Exception as e:
@@ -59,15 +59,27 @@ def search(cfg, keyword, limit=8):
     return [_to_candidate(v) for v in results], None
 
 
+# 单条目查询 TTL 缓存（6 小时）：作品详情反复打开不重复打 VNDB（限速/卡慢主因）
+_get_cache = {}
+_GET_TTL = 6 * 3600
+
+
 def get(cfg, vndb_id):
-    """按 ID 精确获取（用于已入库游戏刷新信息）。"""
+    """按 ID 精确获取（用于已入库游戏刷新信息）。6h TTL 缓存。"""
+    import time
+    now = time.time()
+    hit = _get_cache.get(vndb_id)
+    if hit and now - hit[0] < _GET_TTL:
+        return hit[1], None
     results, err = _query(cfg, {
         "filters": ["id", "=", vndb_id],
         "fields": _FIELDS, "results": 1,
     })
     if err or not results:
         return None, err
-    return _to_candidate(results[0]), None
+    cand = _to_candidate(results[0])
+    _get_cache[vndb_id] = (now, cand)
+    return cand, None
 
 
 # ---------- 厂商 / 系列追踪 ----------

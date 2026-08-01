@@ -432,6 +432,20 @@ export const api = {
     return { running: false, done: 0, pending: {} }
   },
 
+  // 日志
+  async logError(message) {
+    try {
+      if (hasBridge()) return window.pywebview.api.log_error(message)
+    } catch (e) { /* 日志失败忽略，防循环 */ }
+    return { ok: true }
+  },
+
+  async getLogTail(lines = 200) {
+    if (hasBridge()) return window.pywebview.api.get_log_tail(lines)
+    await delay()
+    return { ok: true, log: '' }
+  },
+
   async followMaker(name, vndbId, displayName) {
     if (hasBridge()) return window.pywebview.api.follow_maker(name, vndbId, displayName)
     return { ok: true }

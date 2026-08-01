@@ -15,8 +15,14 @@
       <template v-else-if="w">
         <div class="wd-main">
           <div class="wd-cover-wrap">
-            <img v-if="w.cover_url" :src="w.cover_url" class="wd-cover" />
-            <div v-else class="wd-cover wd-empty">🖼</div>
+            <img
+              v-if="w.cover_url"
+              :src="w.cover_url"
+              class="wd-cover"
+              :class="{ hidden: imgFail }"
+              @error="imgFail = true"
+            />
+            <div v-if="!w.cover_url || imgFail" class="wd-cover wd-empty">🖼</div>
           </div>
           <div class="wd-info">
             <h2 class="wd-title">{{ displayTitle }}</h2>
@@ -57,11 +63,15 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useLibraryStore } from '../stores/library.js'
 
 const store = useLibraryStore()
 const w = computed(() => store.workDetail.work)
+const imgFail = ref(false)
+
+// 打开新作品时重置图片失败标记
+watch(() => store.workDetail.vndbId, () => { imgFail.value = false })
 
 const LEN = { 1: '很短', 2: '短', 3: '中等', 4: '长', 5: '很长' }
 const lengthText = computed(() => (w.value && LEN[w.value.length_level]) || '')

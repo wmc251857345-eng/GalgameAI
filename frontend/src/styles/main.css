@@ -548,6 +548,13 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .fixer-item-alias { font-size: 11px; margin-top: 2px; }
 .fixer-done { color: var(--green); font-size: 13px; margin-top: 10px; }
 .maker-error-actions { display: flex; gap: 8px; justify-content: center; margin-top: 10px; }
+.log-panel { width: min(720px, 94vw); }
+.log-view {
+  width: 100%; height: 46vh; resize: none; font-family: Consolas, monospace; font-size: 11.5px;
+  background: var(--bg-deep); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 10px; white-space: pre; overflow: auto;
+}
+.log-view:focus { outline: none; border-color: var(--accent); }
 
 /* ---------- 厂商墙 ---------- */
 .wall-search { margin-bottom: 16px; }
@@ -653,6 +660,7 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .wd-main { display: flex; gap: 22px; }
 .wd-cover-wrap { flex: 0 0 230px; }
 .wd-cover { width: 230px; border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); }
+.wd-cover.hidden { display: none; }
 .wd-empty {
   aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center;
   font-size: 46px; background: var(--bg-deep); border-radius: 8px; color: var(--text-dim);

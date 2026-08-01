@@ -177,9 +177,26 @@
         <button class="btn primary" :disabled="saving" @click="save">
           {{ saving ? '保存中…' : '保存设置' }}
         </button>
+        <button class="btn" @click="showLog">📋 查看日志</button>
         <span v-if="saved" class="saved-ok">✓ 已保存到 config/config.json</span>
       </div>
     </template>
+
+    <!-- 日志弹层 -->
+    <div v-if="logOpen" class="wd-overlay" @click.self="logOpen = false">
+      <div class="wd-panel log-panel">
+        <button class="wd-close" @click="logOpen = false">✕</button>
+        <h2 class="fixer-title">📋 日志（logs/app.log 尾部）</h2>
+        <p class="dim" style="font-size: 12px; margin-bottom: 8px">
+          卡死/报错时查看这里：红色 ERROR 行即异常原因（前端 JS 错误也会自动上报到这里）。
+        </p>
+        <textarea class="log-view" readonly :value="logText" spellcheck="false"></textarea>
+        <div class="row" style="margin-top: 10px">
+          <button class="btn small" @click="refreshLog">🔄 刷新</button>
+          <button class="btn small" @click="copyLog">📄 复制</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -199,6 +216,29 @@ const testing = ref(false)
 const connResult = ref(null)
 const provTest = ref(null)
 const connLabel = { bgm: 'Bangumi', vndb: 'VNDB', llm: 'AI' }
+
+// ---- 日志查看 ----
+const logOpen = ref(false)
+const logText = ref('')
+
+async function showLog() {
+  logOpen.value = true
+  await refreshLog()
+}
+
+async function refreshLog() {
+  const r = await api.getLogTail(300)
+  logText.value = (r && r.ok && r.log) || (r && r.error) || '加载失败'
+}
+
+async function copyLog() {
+  try {
+    await navigator.clipboard.writeText(logText.value)
+    alert('已复制到剪贴板')
+  } catch (e) {
+    alert('复制失败，请手动选择文本复制')
+  }
+}
 
 const providerPool = computed(() => {
   if (!cfg.value) return []
