@@ -1,5 +1,6 @@
-"""Bangumi API (api.bgm.tv) — 国内直连、中文数据，搜索无需 token。"""
-from ..utils import http_get_json, http_session
+"""Bangumi API (api.bgm.tv) — 中文数据源。
+直连可能被 DNS 污染 → DoH 解析真实 IP + socket 补丁。"""
+from ..utils import doh_resolve, http_get_json, http_session, patch_dns
 
 API = "https://api.bgm.tv"
 
@@ -11,11 +12,14 @@ def search(cfg, keyword, limit=8):
     global _unreachable
     if _unreachable:
         return []
-    s = http_session(cfg, proxy_ok=True)  # 跟随代理设置（国内直连可能被 DNS 污染）
+    ip = doh_resolve("api.bgm.tv")
+    if ip:
+        patch_dns("api.bgm.tv", ip)
+    s = http_session(cfg, proxy_ok=True)
     try:
         data = http_get_json(
             s, f"{API}/search/subject/{keyword}",
-            params={"type": 4, "responseGroup": "large"}, timeout=8, tries=1)
+            params={"type": 4, "responseGroup": "large"}, timeout=10, tries=1)
     except Exception:
         _unreachable = True  # 网络不通 → 熔断
         return []

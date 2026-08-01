@@ -170,4 +170,35 @@ export const api = {
     if (hasBridge()) return window.pywebview.api.set_locale_emu(id, enabled)
     return { ok: true }
   },
+
+  // 手动编辑
+  async updateGame(id, fields) {
+    if (hasBridge()) return window.pywebview.api.update_game(id, fields)
+    await delay()
+    return { ok: true }
+  },
+
+  async updateTags(id, tags) {
+    if (hasBridge()) return window.pywebview.api.update_tags(id, tags)
+    await delay()
+    return { ok: true, tags }
+  },
+
+  async chooseCover(id) {
+    if (hasBridge()) return window.pywebview.api.choose_cover(id)
+    await delay()
+    return { ok: false, error: '浏览器预览模式无法弹文件对话框' }
+  },
+
+  async setCoverUrl(id, url) {
+    if (hasBridge()) return window.pywebview.api.set_cover_url(id, url)
+    await delay()
+    return { ok: true }
+  },
+
+  async removeGame(id) {
+    if (hasBridge()) return window.pywebview.api.remove_game(id)
+    await delay()
+    return { ok: true }
+  },
 }

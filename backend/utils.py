@@ -109,3 +109,46 @@ def download_file(session, url, dest, timeout=60):
     except Exception:
         pass
     return False
+
+
+# ---------- DNS 防污染（DoH + socket 补丁） ----------
+import socket  # noqa: E402
+
+_dns_cache = {}  # host -> ip
+
+
+def doh_resolve(host, timeout=6):
+    """DoH 解析（阿里优先，直连/代理自适应），绕过 DNS 污染。返回 IP 或 None。"""
+    if host in _dns_cache:
+        return _dns_cache[host]
+    for url, proxied in (("https://223.5.5.5/resolve", False),
+                         ("https://dns.google/resolve", True)):
+        try:
+            s = requests.Session()
+            s.headers["User-Agent"] = "GALA/0.2"
+            if proxied:
+                s.proxies = {"http": "http://127.0.0.1:7897", "https": "http://127.0.0.1:7897"}
+            r = s.get(url, params={"name": host, "type": "A"}, timeout=timeout)
+            if r.status_code == 200:
+                ips = [a["data"] for a in r.json().get("Answer", []) if a.get("type") == 1]
+                if ips:
+                    _dns_cache[host] = ips[0]
+                    return ips[0]
+        except Exception:
+            continue
+    return None
+
+
+def patch_dns(host, ip):
+    """让 socket.getaddrinfo(host) 返回指定 IP（TLS SNI 仍用原主机名）。幂等。"""
+    if getattr(patch_dns, "_patched", None) == (host, ip):
+        return
+    orig = socket.getaddrinfo
+
+    def patched(name, *a, **kw):
+        if name == host:
+            name = ip
+        return orig(name, *a, **kw)
+
+    socket.getaddrinfo = patched
+    patch_dns._patched = (host, ip)

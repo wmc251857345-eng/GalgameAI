@@ -246,3 +246,29 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .root-path { font-size: 12.5px; color: var(--text); font-family: Consolas, monospace; }
 .add-root { margin-top: 10px; }
 .add-root input { flex: 0 1 420px; }
+
+/* ---------- 编辑模式 ---------- */
+.status-badge.manual { background: rgba(155, 89, 182, .2); color: #9b59b6; }
+.edit-table input, .edit-table textarea {
+  width: 100%; background: var(--bg-deep); border: 1px solid var(--border);
+  color: var(--text-bright); border-radius: 4px; padding: 6px 10px;
+  font-size: 13px; outline: none; font-family: inherit;
+}
+.edit-table textarea { resize: vertical; line-height: 1.6; }
+.tag-chip.editable { display: inline-flex; align-items: center; gap: 6px; }
+.tag-x {
+  background: none; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0;
+}
+.tag-x:hover { color: #e74c3c; }
+.tag-add { display: inline-flex; align-items: center; gap: 6px; }
+.tag-add input {
+  background: var(--bg-deep); border: 1px solid var(--border); color: var(--text-bright);
+  border-radius: 14px; padding: 4px 12px; font-size: 12.5px; outline: none; width: 130px;
+}
+.cover-edit { max-width: 900px; }
+.cover-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.url-input {
+  flex: 1; min-width: 260px; background: var(--bg-deep); border: 1px solid var(--border);
+  color: var(--text-bright); border-radius: 4px; padding: 7px 10px; font-size: 13px; outline: none;
+}

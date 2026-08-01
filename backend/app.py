@@ -64,7 +64,7 @@ def main():
             sys.exit(1)
 
     print(f"[GALA] 加载: {url}")
-    webview.create_window(
+    window = webview.create_window(
         "GALA — Galgame AI Library Agent",
         url,
         js_api=jsapi,
@@ -73,6 +73,7 @@ def main():
         min_size=(980, 640),
         background_color="#171a21",
     )
+    jsapi._window = window  # 供文件对话框等使用
     webview.start()
     print("[GALA] 已退出")
 
