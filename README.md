@@ -2,6 +2,17 @@
 
 本地 Galgame 智能管理器：Steam 风格界面，扫描本地游戏 → 匹配 VNDB/Bangumi → AI 生成中文简介 → 标签 / 时长 / 一键启动（含 Locale Emulator）。
 
+## 核心功能
+
+| 模块 | 说明 |
+|---|---|
+| 🖥 游戏库 | 网格/列表双视图、标签/厂商/年份筛选、收藏、随机、搜索（FTS5）、状态 Tab |
+| 🤖 AI 管家 | 工具调用式对话：搜索/推荐/**口述修正**（correct_game）/换封面/重分析，合规强制防撒谎，历史落库 |
+| 🔁 多 AI 轮询 | 提供商池（catiecli / ggchan / 任意 OpenAI 兼容），失败/限速自动切换 + 45s 冷却，设置页可视化管理 |
+| 🏭 厂商/系列追踪 | VNDB producer 档案 + 全部作品（已拥有标记）、系列/前作全家桶（relations 家族关系） |
+| 🎮 启动 | exe 启发式识别、Locale Emulator、游玩时长统计（进程监控 + 重启补记）、托盘 |
+| 🛡 稳定 | 后台任务断点续跑、异步 AI（不阻塞 UI）、文件日志 `logs/app.log`、自动备份、一键自检 `scripts/verify.py` |
+
 ## 架构
 
 ```
@@ -10,10 +21,11 @@ Vue3 前端 (Steam 风格深色 UI)
 Python 后端 (流水线: 扫描 → 匹配 → 丰富 → 确认)
    ├─ scanner/   Phase 1  特征提取、exe 启发式、readme 编码
    ├─ matcher/   Phase 1  规范化 + 多策略打分 + 待确认
-   ├─ providers/ Phase 2  vndb / bgm / gemini / openai / ocr
+   ├─ providers/ Phase 2  vndb / bgm / llm(多提供商轮询) / ocr
    ├─ enrich/    Phase 2  AI 分析流水线 + 断点续跑任务队列
+   ├─ agent/     Phase 3  AI 管家：工具集 + 执行循环 + 合规检查
    └─ launcher/  Phase 1  启动 / Locale Emulator / 时长统计
-SQLite (library.db, schema v1)
+SQLite (library.db, schema v3)
 ```
 
 ## 快速开始
