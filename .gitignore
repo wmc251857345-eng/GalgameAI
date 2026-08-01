@@ -13,6 +13,8 @@ frontend/dist/
 # 本地数据（含 API key）
 config/config.json
 database/*.db
+database/export/
+database/backup/
 cache/
 logs/
 
