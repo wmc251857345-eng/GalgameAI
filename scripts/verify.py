@@ -195,6 +195,10 @@ check("unfollow maker", len([f for f in js.list_follows()["follows"]
 zt = js.zh_tags(["Romance", "Drama", "Nakige"])
 check("zh tag cache", zt.get("Romance") == "恋爱" and zt.get("Nakige") == "催泪", zt)
 
+# ---------- 11. 作品标题中文缓存（批量翻译落库验证） ----------
+wz = js.zh_work_titles(["v20424"])
+check("work zh title cache", wz.get("v20424") == "夏日口袋", wz)
+
 dbx.close()
 os.remove(tmp)
 
