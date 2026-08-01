@@ -108,6 +108,23 @@ mp = js.get_missing_paths()
 check("missing_paths shape", isinstance(mp, list) and all(
     "path_exists" in x and "exe_exists" in x for x in mp), f"{len(mp)} 条")
 
+# ---------- 6. 异步重分析任务（防卡死核心修复） ----------
+import time as _t
+js2.update_game(2, {"vndb_id": "v20424"})
+_t0 = _t.time()
+r = js2.reanalyze_game(2)
+check("reanalyze non-blocking", r.get("started") and _t.time() - _t0 < 3,
+      f"{_t.time() - _t0:.1f}s")
+st = None
+deadline = _t.time() + 90
+while _t.time() < deadline:
+    st = js2.get_job_status()
+    if not st.get("running"):
+        break
+    _t.sleep(1)
+check("reanalyze job completes",
+      bool(st and st.get("result") and st["result"].get("status") == 2), st)
+
 t = js.test_connection()
 check("test bgm", t.get("bgm", {}).get("ok") is True, t.get("bgm"))
 check("test vndb", t.get("vndb", {}).get("ok") is True, t.get("vndb"))

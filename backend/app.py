@@ -5,13 +5,38 @@
   venv\\Scripts\\python -m backend.app --dev    # 开发（vite dev server）
 """
 import http.server
+import logging
 import os
 import socketserver
 import sys
 import threading
 import time
+import traceback
 
 from . import paths
+
+
+def _setup_logging():
+    """文件日志 + 全局异常钩子：任何线程崩溃/卡死前兆都留痕（logs/app.log）。"""
+    log_file = os.path.join(paths.LOGS_DIR, "app.log")
+    logging.basicConfig(
+        filename=log_file, level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        encoding="utf-8")
+
+    def _exc(t, v, tb):
+        msg = "".join(traceback.format_exception(t, v, tb))
+        logging.error("Unhandled exception:\n%s", msg)
+        try:
+            print(f"[GALA] 未捕获异常 {t.__name__}: {v}", file=sys.stderr)
+        except Exception:
+            pass
+
+    sys.excepthook = _exc
+    threading.excepthook = lambda args: logging.error(
+        "Thread %s crashed:\n%s", args.thread.name,
+        "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+    logging.info("=== GALA 启动 ===")
 
 
 class _Handler(http.server.SimpleHTTPRequestHandler):
@@ -39,12 +64,15 @@ def _startup_tasks(cfg, db):
     try:
         from . import launcher
         launcher.reconcile(db)
+        logging.info("时长补记完成")
     except Exception as e:
+        logging.error("时长补记失败: %s", e)
         print(f"[GALA] 时长补记: {e}")
     try:
         from .api import maybe_auto_backup
         maybe_auto_backup(cfg, db)
     except Exception as e:
+        logging.error("自动备份失败: %s", e)
         print(f"[GALA] 自动备份: {e}")
 
 
@@ -91,10 +119,12 @@ def _start_tray(window):
 
 
 def main():
+    _setup_logging()
     try:
         import webview
     except Exception as e:
         print(f"[GALA] pywebview 加载失败: {e}")
+        logging.error("pywebview 加载失败: %s", e)
         sys.exit(1)
 
     from . import api

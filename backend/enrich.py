@@ -17,6 +17,9 @@ STATE = {
 }
 _lock = threading.Lock()
 
+# 单游戏后台任务（重新分析用）：前端轮询 get_job_status
+ONE_JOB = {"running": False, "game_id": None, "stage": "", "result": None, "error": None}
+
 ENRICH_SYSTEM = (
     "你是 Galgame 资料库整理助手。只输出合法 JSON，不要任何多余文字。"
 )
@@ -61,8 +64,9 @@ def download_cover(cfg, game_id, url, fallback_local=None):
     return None
 
 
-def _apply_match(cfg, db, game, cand):
-    """把候选应用到 game：填字段、下载封面、AI 中文化。"""
+def _apply_match(cfg, db, game, cand, async_enrich=False):
+    """把候选应用到 game：填字段、下载封面。async_enrich=True 时 AI 润色后台执行
+    （用于桥接线程内的确认操作，避免同步等 LLM 卡死界面）。"""
     cover_path = download_cover(cfg, game["id"], cand.get("cover_url"),
                                 game.get("cover_local"))
     bgm_id = int(cand["external_id"]) if cand["provider"] == "bgm" and cand["external_id"].isdigit() else None
@@ -83,7 +87,10 @@ def _apply_match(cfg, db, game, cand):
          vndb_id, bgm_id,
          cand.get("length_level"), cand.get("length_minutes"),
          cand["score"], cand["provider"], game["id"]))
-    _enrich_ai(cfg, db, game, cand)
+    if async_enrich:
+        threading.Thread(target=_enrich_ai, args=(cfg, db, game, cand), daemon=True).start()
+    else:
+        _enrich_ai(cfg, db, game, cand)
 
 
 def _enrich_ai(cfg, db, game, cand):
@@ -240,6 +247,25 @@ def _analyze_one(cfg, db, game):
         return {"status": 2, "matched": best.get("title"), "score": best["score"]}
     db.execute("UPDATE games SET status=1 WHERE id=?", (game["id"],))
     return {"status": 1, "matched": best.get("title"), "score": best["score"]}
+
+
+def _run_one_job(cfg, db, game):
+    """后台执行单个游戏的重新分析（供 reanalyze_game 用）。
+    已入库且有 vndb_id → 快速 VNDB 刷新；否则完整重新识别。"""
+    with _lock:
+        ONE_JOB.update(running=True, game_id=game["id"], stage="analyze",
+                       result=None, error=None)
+    try:
+        if game.get("status") == 2 and game.get("vndb_id"):
+            from .api import JsApi
+            r = JsApi._refresh_game(cfg, db, game)
+        else:
+            r = _analyze_one(cfg, db, game)
+        with _lock:
+            ONE_JOB.update(running=False, stage="idle", result=r)
+    except Exception as e:
+        with _lock:
+            ONE_JOB.update(running=False, stage="idle", result=None, error=str(e))
 
 
 def scan_all(cfg, db):

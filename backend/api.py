@@ -88,6 +88,25 @@ def _rating_disp(r):
     return r
 
 
+# exe 存在性 TTL 缓存：避免每次列库都对 HDD 反复 stat（大库/机械盘会卡）
+_exe_cache = {}
+_EXE_TTL = 30
+
+
+def _exe_exists(path):
+    if not path:
+        return False
+    hit = _exe_cache.get(path)
+    now = time.time()
+    if hit and now - hit[1] < _EXE_TTL:
+        return hit[0]
+    v = os.path.exists(path)
+    _exe_cache[path] = (v, now)
+    if len(_exe_cache) > 2000:
+        _exe_cache.clear()
+    return v
+
+
 def _tags(db, game_id):
     return db.query(
         "SELECT t.name FROM tags t JOIN game_tags gt ON t.id=gt.tag_id"
@@ -103,7 +122,7 @@ def _game_row(g, db, with_extra=False):
     row["rating_disp"] = _rating_disp(g.get("rating"))
     row["score"] = row["rating_disp"]            # 网格卡片 hover 用
     row["hue"] = (int(g["id"] or 0) * 47) % 360  # 无封面时占位渐变主色
-    row["exe_exists"] = bool(g.get("exe_path")) and os.path.exists(g["exe_path"])
+    row["exe_exists"] = _exe_exists(g.get("exe_path"))
     row["playtime_hours"] = round((g.get("playtime_seconds") or 0) / 3600, 1)
     if with_extra:
         row["tags"] = [t["name"] for t in _tags(db, g["id"])]
@@ -285,7 +304,8 @@ class JsApi:
         cand["score"] = c["score"]
         cand["provider"] = c["provider"]
         cand["external_id"] = c["external_id"]
-        enrich._apply_match(self._cfg, self._db, game, cand)
+        # AI 润色后台执行：确认操作不在桥接线程里同步等 LLM（避免卡死界面）
+        enrich._apply_match(self._cfg, self._db, game, cand, async_enrich=True)
         # 写入匹配记忆：用户确认过 → 下次重扫同一文件夹直接命中
         fk = normalize(os.path.basename(game.get("path") or ""))
         if fk:
@@ -352,7 +372,7 @@ class JsApi:
             row = {"id": g["id"], "title": g["title"], "path": g["path"],
                    "exe_path": g["exe_path"]}
             row["path_exists"] = bool(g["path"]) and os.path.isdir(g["path"])
-            row["exe_exists"] = bool(g["exe_path"]) and os.path.exists(g["exe_path"])
+            row["exe_exists"] = _exe_exists(g["exe_path"])
             if not row["exe_exists"]:
                 out.append(row)
         return out
@@ -386,25 +406,29 @@ class JsApi:
         return {"ok": True, "path": new_dir, "exe_path": exe}
 
     def reanalyze_game(self, game_id):
-        """已入库(2)：从 VNDB 刷新 + AI 重新润色；未确认(0/1)：完整重新识别。"""
+        """已入库(2)：从 VNDB 刷新 + AI 重新润色；未确认(0/1)：完整重新识别。
+        改为后台任务执行（ONE_JOB），前端轮询 get_job_status，不阻塞桥接线程。"""
         from . import enrich
         gid = int(game_id)
         game = self._db.query_one("SELECT * FROM games WHERE id=?", (gid,))
         if not game:
             return {"ok": False, "error": "游戏不存在"}
-        if game["status"] == 2:
-            return self._refresh_game(cfg=self._cfg, db=self._db, game=game)
-        self._db.execute("UPDATE games SET status=0 WHERE id=?", (gid,))
-        game = self._db.query_one("SELECT * FROM games WHERE id=?", (gid,))
-        try:
-            r = enrich._analyze_one(self._cfg, self._db, game)
-            return {"ok": True, "result": r}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        if enrich.ONE_JOB["running"]:
+            return {"ok": False, "error": "已有分析任务在进行中"}
+        t = threading.Thread(target=enrich._run_one_job,
+                             args=(self._cfg, self._db, game), daemon=True)
+        t.start()
+        return {"ok": True, "started": True, "game_id": gid}
+
+    def get_job_status(self):
+        """单游戏后台任务状态（reanalyze 轮询用）。"""
+        from . import enrich
+        with enrich._lock:
+            return dict(enrich.ONE_JOB)
 
     @staticmethod
     def _refresh_game(cfg, db, game):
-        """已入库游戏刷新：
+        """已入库游戏刷新（被 reanalyze 后台任务调用）：
         - 有 vndb_id → VNDB 精确刷新（封面/评分/时长/简介）+ AI 润色
         - 无 vndb_id（纯 AI 识别）→ 完整重新识别（AI 可能认错）
         """
@@ -412,17 +436,18 @@ class JsApi:
         from .providers import vndb
         if not game.get("vndb_id"):
             db.execute("UPDATE games SET status=0 WHERE id=?", (game["id"],))
-            return {"ok": True, "result": enrich._analyze_one(cfg, db, game)}
+            return enrich._analyze_one(cfg, db, game)
         cand, _ = vndb.get(cfg, game["vndb_id"])
         if cand:
+            cand["score"] = 1.0
             enrich._apply_match(cfg, db, game, cand)
-            return {"ok": True, "result": {"status": 2, "refreshed_from": "vndb"}}
+            return {"status": 2, "refreshed_from": "vndb"}
         enrich._enrich_ai(cfg, db, game, {
             "title": game["title"], "title_orig": game.get("title_jp"),
             "maker": game.get("maker"), "released": game.get("released"),
             "summary": game.get("description"), "tags": [],
             "score": game.get("match_confidence") or 0.5})
-        return {"ok": True, "result": {"status": 2, "refreshed_from": "ai"}}
+        return {"status": 2, "refreshed_from": "ai"}
 
     # ---------- 手动编辑 ----------
     EDITABLE = {

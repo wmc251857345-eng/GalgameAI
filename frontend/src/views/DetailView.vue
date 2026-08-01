@@ -63,7 +63,9 @@
               <button class="btn" :class="{ 'fav-on': g.favorite }" @click="toggleFav">
                 {{ g.favorite ? '♥ 已收藏' : '♡ 收藏' }}
               </button>
-              <button class="btn" @click="reanalyze">⟳ 重新 AI 分析</button>
+              <button class="btn" :disabled="reanalyzing" @click="reanalyze">
+                {{ reanalyzing ? '⟳ 分析中…' : '⟳ 重新 AI 分析' }}
+              </button>
               <button class="btn" @click="startEdit">✏ 编辑</button>
               <label class="le-toggle">
                 <input :checked="!!g.use_locale_emu" type="checkbox" @change="toggleLe" />
@@ -159,7 +161,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, onUnmounted, reactive, ref } from 'vue'
 import { useLibraryStore } from '../stores/library.js'
 import { api } from '../api.js'
 
@@ -168,6 +170,9 @@ const g = computed(() => store.detail)
 
 const editing = ref(false)
 const saving = ref(false)
+const reanalyzing = ref(false)
+let jobTimer = null
+onUnmounted(() => clearTimeout(jobTimer))
 const form = reactive({})
 const editTags = ref([])
 const tagInput = ref('')
@@ -302,9 +307,32 @@ async function stop() {
 }
 async function reanalyze() {
   const r = await api.reanalyzeGame(g.value.id)
-  if (r && !r.ok) alert(r.error)
-  store.refreshDetail()
-  store.load()
+  if (r && !r.ok) {
+    alert(r.error)
+    return
+  }
+  reanalyzing.value = true
+  pollJob()
+}
+
+function pollJob() {
+  clearTimeout(jobTimer)
+  jobTimer = setTimeout(async () => {
+    let st = null
+    try {
+      st = await api.getJobStatus()
+    } catch (e) {
+      st = null
+    }
+    if (st && st.running) {
+      pollJob()
+    } else {
+      reanalyzing.value = false
+      if (st && st.error) alert(`分析失败: ${st.error}`)
+      await store.refreshDetail()
+      store.load()
+    }
+  }, 1500)
 }
 async function confirm(c) {
   const r = await api.confirmMatch(g.value.id, c.provider, c.external_id)

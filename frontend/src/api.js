@@ -4,6 +4,14 @@ const hasBridge = () =>
 
 const delay = (ms = 200) => new Promise((r) => setTimeout(r, ms))
 
+// 慢调用超时保护：网络卡住时提示而不是无限挂起（js_api 桥接 HTTP 无超时）
+const withTimeout = (p, ms = 90000, label = '请求') =>
+  Promise.race([
+    p,
+    new Promise((_, rej) =>
+      setTimeout(() => rej(new Error(`${label}超时(${ms / 1000}s)，请检查网络后重试`)), ms)),
+  ])
+
 // ---------- 桥接就绪等待（修复启动竞态：Vue 挂载可能早于 pywebview 注入 js_api，
 // 导致 store.load() 走了 mock 分支、整个应用显示假数据。必须等 pywebviewready） ----------
 let _bridgePromise = null
@@ -139,7 +147,9 @@ export const api = {
   },
 
   async confirmMatch(gameId, provider, externalId) {
-    if (hasBridge()) return window.pywebview.api.confirm_match(gameId, provider, externalId)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.confirm_match(gameId, provider, externalId), 30000, '确认')
+    }
     await delay()
     return { ok: true }
   },
@@ -150,9 +160,17 @@ export const api = {
   },
 
   async reanalyzeGame(gameId) {
-    if (hasBridge()) return window.pywebview.api.reanalyze_game(gameId)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.reanalyze_game(gameId), 10000, '分析启动')
+    }
     await delay(600)
     return { ok: true }
+  },
+
+  async getJobStatus() {
+    if (hasBridge()) return window.pywebview.api.get_job_status()
+    await delay()
+    return { running: false, game_id: null, stage: 'idle', result: null, error: null }
   },
 
   // 库根目录
@@ -273,7 +291,9 @@ export const api = {
   },
 
   async testConnection() {
-    if (hasBridge()) return window.pywebview.api.test_connection()
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.test_connection(), 120000, '连接测试')
+    }
     await delay(500)
     return { bgm: { ok: true, ms: 120 }, vndb: { ok: true, ms: 900 }, llm: { ok: true, ms: 800 } }
   },

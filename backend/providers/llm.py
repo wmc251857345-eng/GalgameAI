@@ -21,7 +21,7 @@ def _endpoint(cfg):
     return base + "/chat/completions"
 
 
-def chat(cfg, messages, json_mode=True, vision_image=None, timeout=90):
+def chat(cfg, messages, json_mode=True, vision_image=None, timeout=40):
     api_key = cfg.get("provider.api_key", "")
     if not api_key:
         return None, "未配置 API Key"
@@ -46,7 +46,7 @@ def chat(cfg, messages, json_mode=True, vision_image=None, timeout=90):
     url = _endpoint(cfg)
     headers = {"Authorization": f"Bearer {api_key}"}
     last = None
-    for i in range(3):
+    for i in range(2):  # 重试封顶 2 次，避免桥接线程长时间挂起
         try:
             r = s.post(url, json=body, headers=headers, timeout=timeout)
             if r.status_code == 200:
@@ -60,7 +60,7 @@ def chat(cfg, messages, json_mode=True, vision_image=None, timeout=90):
                 break
         except Exception as e:
             last = e
-        time.sleep(2 * (i + 1))
+        time.sleep(1.5 * (i + 1))
     return None, last
 
 
