@@ -179,6 +179,22 @@ check("new releases start", nr0.get("ok"), nr0)
 nrs = js.get_new_releases()
 check("new releases state shape", "state" in nrs and "releases" in nrs, "ok")
 
+# ---------- 10. 关注厂商 / 厂商映射 / 标签 ----------
+fp = js.follow_maker("Yuzusoft", "p98", "Yuzusoft")
+check("follow maker", fp.get("ok"), fp)
+fl = js.list_follows()
+check("follows list", fl.get("ok") and any(f["maker_name"] == "Yuzusoft" for f in fl["follows"]), "ok")
+sp = js.search_producers("Whirlpool")
+check("search producers", sp.get("ok") and len(sp.get("candidates", [])) > 0,
+      f"{len(sp.get('candidates', []))} 候选")
+mp = js.set_maker_mapping("Yuzusoft", "p98", "Yuzusoft")
+check("set maker mapping", mp.get("ok"), mp)
+js.unfollow_maker("Yuzusoft")
+check("unfollow maker", len([f for f in js.list_follows()["follows"]
+                             if f["maker_name"] == "Yuzusoft"]) == 0, "ok")
+zt = js.zh_tags(["Romance", "Drama", "Nakige"])
+check("zh tag cache", zt.get("Romance") == "恋爱" and zt.get("Nakige") == "催泪", zt)
+
 dbx.close()
 os.remove(tmp)
 

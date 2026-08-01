@@ -19,6 +19,8 @@ export const useLibraryStore = defineStore('library', {
     currentView: 'library', // library | detail | pending | stats | settings | chat | maker | makers
     maker: { mode: 'maker', key: null, profile: null, loading: false, error: null },
     makers: { list: [], loading: false },
+    follows: [],
+    tagTranslating: false,
     newReleases: { items: [], loading: false, running: false, done: 0, total: 0, stage: '' },
     workDetail: { vndbId: null, work: null, loading: false, error: null, translating: false, translateError: null },
     selectedGameId: null,
@@ -335,6 +337,41 @@ export const useLibraryStore = defineStore('library', {
 
     closeWorkDetail() {
       this.workDetail = { vndbId: null, work: null, loading: false, error: null, translating: false, translateError: null }
+    },
+
+    // ---- 关注厂商 / 标签翻译 ----
+    async loadFollows() {
+      const r = await api.listFollows()
+      if (r && r.ok) this.follows = r.follows || []
+    },
+
+    isFollowed(name) {
+      return this.follows.some((f) => f.maker_name === name)
+    },
+
+    async toggleFollow(name, vndbId, displayName) {
+      if (this.isFollowed(name)) {
+        await api.unfollowMaker(name)
+        this.follows = this.follows.filter((f) => f.maker_name !== name)
+        return false
+      }
+      await api.followMaker(name, vndbId, displayName)
+      await this.loadFollows()
+      return true
+    },
+
+    // 标签翻译完成后刷新中文标签显示
+    async pollTagTranslate() {
+      const st = await api.getTagTranslateStatus()
+      this.tagTranslating = !!st.running
+      if (st.running) {
+        setTimeout(() => this.pollTagTranslate(), 2500)
+      }
+    },
+
+    async ensureTagTranslate(tags) {
+      const r = await api.translateTags(tags)
+      if (r && r.ok) this.pollTagTranslate()
     },
   },
 })

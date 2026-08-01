@@ -45,6 +45,7 @@
     </div>
     <div v-else class="wall-grid">
       <div v-for="m in filtered" :key="m.maker" class="wall-card" @click="enterMaker(m)">
+        <span v-if="store.isFollowed(m.maker)" class="wall-follow" title="已关注">★</span>
         <div class="wall-covers">
           <template v-if="m.covers.length">
             <img
@@ -89,5 +90,6 @@ function refresh() {
 onMounted(() => {
   store.loadMakersWall()
   store.loadNewReleases()
+  store.loadFollows()
 })
 </script>

@@ -141,6 +141,9 @@ _new_lock = threading.Lock()
 # 作品中文翻译任务（单槽）
 _TRANSLATE_JOB = {"running": False, "vndb_id": None, "done": False, "error": None}
 
+# 标签批量翻译任务（单槽）
+_TAG_JOB = {"running": False, "pending": [], "done": 0, "error": None}
+
 
 class JsApi:
     def __init__(self, db, config):
@@ -673,35 +676,6 @@ class JsApi:
             w["owned"] = w["id"] in idmap
             w["local_id"] = idmap.get(w["id"])
 
-    def get_maker_profile(self, maker):
-        """厂商档案：介绍 + 全部作品（含已拥有标记）+ 系列归类。1 小时 TTL 缓存。"""
-        from .providers import vndb
-        import time as _t
-        key = (maker or "").strip()
-        if not key:
-            return {"ok": False, "error": "厂商名为空"}
-        now = _t.time()
-        hit = _maker_cache.get(key)
-        if hit and now - hit[0] < 3600:
-            return hit[1]
-        prod, err = vndb.get_producer(self._cfg, key)
-        if err:
-            return {"ok": False, "error": err}
-        if not prod:
-            return {"ok": False, "error": f"VNDB 没找到厂商「{key}」"}
-        works, werr = vndb.get_producer_vns(self._cfg, prod["id"])
-        if werr:
-            return {"ok": False, "error": werr}
-        owned = self._owned_vndb_set()
-        for w in works:
-            w["owned"] = w["id"] in owned
-            w["local_id"] = owned.get(w["id"])
-        result = {"ok": True, "producer": prod, "works": works,
-                  "owned_count": sum(1 for w in works if w["owned"]),
-                  "total_count": len(works)}
-        _maker_cache[key] = (now, result)
-        return result
-
     def get_series_profile(self, series_id):
         """系列档案：以锚点 VN 收集同系列（relation='ser'）全部作品，含已拥有标记。"""
         from .providers import vndb
@@ -793,16 +767,28 @@ class JsApi:
         global _NEW_RELEASES
         import datetime
         cutoff = (datetime.date.today() - datetime.timedelta(days=730)).isoformat()
-        makers = [r["maker"] for r in self._db.query(
-            "SELECT DISTINCT maker FROM games WHERE maker IS NOT NULL AND maker!=''")]
+        # 本地厂商 ∪ 关注厂商（关注的可带 vndb_id，直接精确拉取）
+        maker_rows = self._db.query(
+            "SELECT DISTINCT maker FROM games WHERE maker IS NOT NULL AND maker!=''")
+        follow_rows = self._db.query(
+            "SELECT maker_name, vndb_id FROM maker_follows WHERE maker_name!=''")
+        targets = []
+        for r in maker_rows:
+            targets.append({"name": r["maker"], "vndb_id": ""})
+        for r in follow_rows:
+            if not any(t["name"] == r["maker_name"] for t in targets):
+                targets.append({"name": r["maker_name"], "vndb_id": r.get("vndb_id") or ""})
         with _new_lock:
-            _NEW_STATE.update(stage="查询厂商", total=len(makers))
+            _NEW_STATE.update(stage="查询厂商", total=len(targets))
         collected = {}
-        for i, mk in enumerate(makers):
+        for i, t in enumerate(targets):
             with _new_lock:
-                _NEW_STATE.update(stage=mk, done=i + 1)
+                _NEW_STATE.update(stage=t["name"], done=i + 1)
             try:
-                prod, err = vndb.get_producer(self._cfg, mk)
+                if t["vndb_id"]:
+                    prod = {"id": t["vndb_id"], "name": t["name"]}
+                else:
+                    prod, err = vndb.get_producer(self._cfg, t["name"])
                 if not prod:
                     continue
                 works, werr = vndb.get_producer_vns(self._cfg, prod["id"])
@@ -821,6 +807,7 @@ class JsApi:
                 g = self._db.query_one("SELECT title FROM games WHERE id=?", (w["local_id"],))
                 if g:
                     w["local_title"] = g["title"]
+            w["tags_zh"] = [self.zh_tags([t])[t] for t in (w.get("tags") or [])]
         with _new_lock:
             _NEW_RELEASES = lst
             _NEW_STATE.update(running=False, stage="完成", error=None)
@@ -853,6 +840,11 @@ class JsApi:
         if c:
             cand["zh_title"] = c["zh_title"]
             cand["zh_summary"] = c["zh_summary"]
+        # 中文标签
+        if cand.get("tags"):
+            zh = self.zh_tags(cand["tags"])
+            cand["tags_zh"] = [zh.get(t, t) for t in cand["tags"]]
+            self.translate_tags_async(cand["tags"])
         return {"ok": True, "work": cand}
 
     def translate_work_async(self, vndb_id):
@@ -900,6 +892,176 @@ class JsApi:
     def get_translate_status(self):
         with _new_lock:
             return dict(_TRANSLATE_JOB)
+
+    def get_maker_profile(self, maker):
+        """厂商档案：介绍 + 全部作品（含已拥有标记）。匹配记忆 producer_map 优先，
+        找不到/歧义时返回候选列表让用户更正。"""
+        from .providers import vndb
+        import time as _t
+        key = (maker or "").strip()
+        if not key:
+            return {"ok": False, "error": "厂商名为空"}
+        now = _t.time()
+        hit = _maker_cache.get(key)
+        if hit and now - hit[0] < 3600:
+            result = hit[1]
+            # 实时应用最新中文标签（后台翻译可能刚完成，缓存里是旧映射）
+            all_tags = sorted({t for w in result.get("works", []) for t in (w.get("tags") or [])})
+            if all_tags:
+                zh = self.zh_tags(all_tags)
+                for w in result["works"]:
+                    w["tags_zh"] = [zh.get(t, t) for t in (w.get("tags") or [])]
+            return result
+        # 1) 记忆命中 → 直接用 vndb_id
+        memo = self._db.query_one(
+            "SELECT vndb_id, display_name FROM producer_map WHERE maker_name=?", (key,))
+        prod = None
+        if memo and memo["vndb_id"]:
+            prod = {"id": memo["vndb_id"], "name": memo["display_name"],
+                    "aliases": [], "description": "", "type": ""}
+        # 2) 否则展开搜索（智能匹配，不再粗暴整串丢进去）
+        if not prod:
+            prod, perr = vndb.get_producer(self._cfg, key)
+            if perr:
+                return {"ok": False, "error": perr}
+            if prod:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO producer_map (maker_name, vndb_id, display_name, updated_at)"
+                    " VALUES (?,?,?,?)", (key, prod["id"], prod["name"], now_iso()))
+        if not prod:
+            return {"ok": False, "error": f"VNDB 没找到厂商「{key}」",
+                    "not_found": True, "maker": key}
+        works, werr = vndb.get_producer_vns(self._cfg, prod["id"])
+        if werr:
+            return {"ok": False, "error": werr}
+        self._mark_owned(works)
+        # 中文标签映射 + 触发未翻译标签的批量翻译
+        all_tags = sorted({t for w in works for t in (w.get("tags") or [])})
+        if all_tags:
+            zh = self.zh_tags(all_tags)
+            for w in works:
+                w["tags_zh"] = [zh.get(t, t) for t in (w.get("tags") or [])]
+            self.translate_tags_async(all_tags)
+        result = {"ok": True, "producer": prod, "works": works,
+                  "mapped": bool(memo),
+                  "owned_count": sum(1 for w in works if w["owned"]),
+                  "total_count": len(works)}
+        _maker_cache[key] = (now, result)
+        return result
+
+    def search_producers(self, keyword):
+        """搜索 VNDB 厂商候选列表（用户手动更正用）。"""
+        from .providers import vndb
+        kw = (keyword or "").strip()
+        if not kw:
+            return {"ok": False, "error": "关键词为空"}
+        cands, err = vndb.search_producers(self._cfg, kw)
+        if err:
+            return {"ok": False, "error": err}
+        return {"ok": True, "candidates": cands}
+
+    def set_maker_mapping(self, maker_name, vndb_id, display_name=""):
+        """用户手动指定 本地厂商名 → VNDB producer，写记忆表并清缓存。"""
+        maker = (maker_name or "").strip()
+        vid = (vndb_id or "").strip()
+        if not maker or not vid:
+            return {"ok": False, "error": "参数不完整"}
+        self._db.execute(
+            "INSERT OR REPLACE INTO producer_map (maker_name, vndb_id, display_name, updated_at)"
+            " VALUES (?,?,?,?)", (maker, vid, (display_name or vid), now_iso()))
+        _maker_cache.pop(maker, None)
+        return {"ok": True}
+
+    def translate_tags_async(self, tags):
+        """批量翻译标签为中文（缺失的才译），结果落 tag_cache。单槽后台任务。"""
+        tags = [str(t).strip() for t in (tags or []) if str(t).strip()]
+        if not tags:
+            return {"ok": False, "error": "没有可翻译的标签"}
+        have = {r["en_name"] for r in self._db.query(
+            "SELECT en_name FROM tag_cache WHERE en_name IN (%s)" % ",".join("?" * len(tags)), tags)}
+        missing = [t for t in tags if t not in have][:30]
+        if not missing:
+            return {"ok": True, "translated": 0}
+        with _new_lock:
+            if _TAG_JOB.get("running"):
+                # 合并进正在进行的任务
+                _TAG_JOB["pending"] = sorted(set(_TAG_JOB.get("pending", [])) | set(missing))
+                return {"ok": True, "running": True}
+            _TAG_JOB.update(running=True, pending=missing, done=0, error=None)
+        threading.Thread(target=self._run_tag_translate, daemon=True).start()
+        return {"ok": True, "running": True}
+
+    def _run_tag_translate(self):
+        from .providers import llm
+        try:
+            while True:
+                with _new_lock:
+                    pending = list(_TAG_JOB.get("pending", []))
+                if not pending:
+                    break
+                batch = pending[:20]
+                system = ("你是 Galgame 标签中文本地化。把以下英文标签翻译成简体中文（游戏题材/剧情/玩法常用译名，"
+                          "如 Romance→恋爱喜剧可简作恋爱）。严格输出 JSON {\"tags\":[{\"en\":\"原文\",\"zh\":\"中文\"},...]}，"
+                          "en 必须与输入完全一致。")
+                user = "\n".join(f"- {t}" for t in batch)
+                result, terr = llm.chat_json(self._cfg, system, user, timeout=60)
+                rows = []
+                if result and isinstance(result.get("tags"), list):
+                    for item in result["tags"]:
+                        en = (item.get("en") or "").strip()
+                        zh = (item.get("zh") or "").strip()
+                        if en and zh:
+                            rows.append((en, zh))
+                with _new_lock:
+                    for en, zh in rows:
+                        self._db.execute(
+                            "INSERT OR REPLACE INTO tag_cache (en_name, zh_name) VALUES (?,?)",
+                            (en, zh))
+                    _TAG_JOB["pending"] = [t for t in pending if t not in {r[0] for r in rows}]
+                    _TAG_JOB["done"] += len(rows)
+        except Exception as e:
+            with _new_lock:
+                _TAG_JOB["error"] = str(e)[:200]
+        finally:
+            with _new_lock:
+                _TAG_JOB["running"] = False
+
+    def get_tag_translate_status(self):
+        with _new_lock:
+            return dict(_TAG_JOB)
+
+    def zh_tags(self, tags):
+        """把英文标签列表映射为中文（查缓存，未命中的返回原文）。"""
+        if not tags:
+            return {}
+        placeholders = ",".join("?" * len(tags))
+        rows = self._db.query(
+            f"SELECT en_name, zh_name FROM tag_cache WHERE en_name IN ({placeholders})", tags)
+        m = {r["en_name"]: r["zh_name"] for r in rows}
+        return {t: m.get(t, t) for t in tags}
+
+    # ---------- 关注厂商 ----------
+    def follow_maker(self, maker_name, vndb_id="", display_name=""):
+        name = (maker_name or "").strip()
+        if not name:
+            return {"ok": False, "error": "厂商名为空"}
+        if vndb_id:
+            self._db.execute(
+                "INSERT OR REPLACE INTO maker_follows (maker_name, vndb_id, display_name, created_at)"
+                " VALUES (?,?,?,?)", (name, vndb_id, display_name or name, now_iso()))
+        else:
+            self._db.execute(
+                "INSERT OR IGNORE INTO maker_follows (maker_name, vndb_id, display_name, created_at)"
+                " VALUES (?,,'',?,?)", (name, name, now_iso()))
+        return {"ok": True}
+
+    def unfollow_maker(self, maker_name):
+        self._db.execute("DELETE FROM maker_follows WHERE maker_name=?", ((maker_name or "").strip(),))
+        return {"ok": True}
+
+    def list_follows(self):
+        rows = self._db.query("SELECT * FROM maker_follows ORDER BY created_at DESC")
+        return {"ok": True, "follows": rows}
 
     # ---------- AI 管家对话 ----------
     def chat_send(self, message, context_game_id=None):

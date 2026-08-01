@@ -59,7 +59,7 @@ def start_http_server():
 
 
 def _startup_tasks(cfg, db):
-    """后台启动任务：游玩时长补记 + 自动备份。"""
+    """后台启动任务：游玩时长补记 + 自动备份 + 新作预抓取。"""
     time.sleep(3)
     try:
         from . import launcher
@@ -67,14 +67,19 @@ def _startup_tasks(cfg, db):
         logging.info("时长补记完成")
     except Exception as e:
         logging.error("时长补记失败: %s", e)
-        print(f"[GALA] 时长补记: {e}")
+        print(f"[GALA] 时长补记失败: {e}")
     try:
-        from .api import maybe_auto_backup
+        from .api import JsApi
+        js = JsApi(db, cfg)
+        js.refresh_new_releases()  # 启动即预抓取新作（后台，厂商墙打开即有数据）
+        logging.info("新作预抓取已启动")
+    except Exception as e:
+        logging.error("新作预抓取启动失败: %s", e)
+    try:
         maybe_auto_backup(cfg, db)
     except Exception as e:
         logging.error("自动备份失败: %s", e)
-        print(f"[GALA] 自动备份: {e}")
-
+        print(f"[GALA] 自动备份失败: {e}")
 
 def _start_tray(window):
     """系统托盘：显示/隐藏 + 退出。关窗默认最小化到托盘（closing 事件返回 False 取消关闭）。"""

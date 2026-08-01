@@ -501,6 +501,52 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px;
 }
 .mk-series-chip:hover { background: rgba(102, 192, 244, 0.22); }
+.mk-title-jp {
+  font-size: 10.5px; color: var(--text-dim); margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mk-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+.mk-tag {
+  font-size: 10px; padding: 1px 7px; border-radius: 8px;
+  background: var(--bg-deep); color: var(--text-dim); border: 1px solid var(--border);
+}
+.mk-badge.mapped { background: rgba(164, 208, 7, 0.14); color: var(--green); border-color: rgba(164, 208, 7, 0.4); }
+
+/* 标签筛选条 */
+.tag-filter {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-bottom: 14px; padding: 8px 12px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.tag-filter-label { font-size: 12px; color: var(--text-dim); }
+.tf-chip {
+  font-size: 11.5px; padding: 3px 12px; border-radius: 14px; cursor: pointer;
+  background: var(--bg-deep); color: var(--text-dim); border: 1px solid var(--border);
+  transition: all 0.12s;
+}
+.tf-chip:hover { color: var(--text-bright); border-color: var(--accent); }
+.tf-chip.active {
+  background: var(--accent); color: #101319; font-weight: 600; border-color: var(--accent);
+}
+
+/* 更正厂商弹层 */
+.fixer-panel { width: min(560px, 92vw); }
+.fixer-title { font-size: 17px; margin: 0 0 8px; color: var(--text-bright); }
+.fixer-search { display: flex; gap: 8px; margin-bottom: 12px; }
+.fixer-search .chat-input { border-radius: 8px; }
+.fixer-search .btn { margin-top: 0; border-radius: 8px; }
+.fixer-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.fixer-item {
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+  background: var(--bg-deep); transition: border-color 0.12s;
+}
+.fixer-item:hover { border-color: var(--accent); }
+.fixer-item.active { border-color: var(--green); background: rgba(164, 208, 7, 0.08); }
+.fixer-item-name { font-size: 13px; color: var(--text-bright); font-weight: 600; }
+.fixer-item-name .dim { font-weight: 400; font-size: 11px; margin-left: 6px; }
+.fixer-item-alias { font-size: 11px; margin-top: 2px; }
+.fixer-done { color: var(--green); font-size: 13px; margin-top: 10px; }
+.maker-error-actions { display: flex; gap: 8px; justify-content: center; margin-top: 10px; }
 
 /* ---------- 厂商墙 ---------- */
 .wall-search { margin-bottom: 16px; }
@@ -514,10 +560,13 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
   gap: 16px;
 }
 .wall-card {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   padding: 12px; cursor: pointer; transition: transform 0.15s, border-color 0.15s;
 }
 .wall-card:hover { transform: translateY(-3px); border-color: var(--accent); }
+.wall-follow {
+  position: absolute; top: 8px; right: 10px; z-index: 5; font-size: 16px; color: #ffb340;
+}
 .wall-covers {
   position: relative; height: 118px; display: flex; align-items: center;
   justify-content: center; margin-bottom: 8px;

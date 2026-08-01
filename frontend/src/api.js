@@ -400,4 +400,44 @@ export const api = {
     if (hasBridge()) return window.pywebview.api.get_translate_status()
     return { running: false, done: false }
   },
+
+  // 厂商更正 / 标签翻译 / 关注
+  async searchProducers(keyword) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.search_producers(keyword), 30000, '厂商搜索')
+    }
+    await delay()
+    return { ok: false, candidates: [] }
+  },
+
+  async setMakerMapping(makerName, vndbId, displayName) {
+    if (hasBridge()) return window.pywebview.api.set_maker_mapping(makerName, vndbId, displayName)
+    return { ok: true }
+  },
+
+  async translateTags(tags) {
+    if (hasBridge()) return window.pywebview.api.translate_tags_async(tags)
+    return { ok: true }
+  },
+
+  async getTagTranslateStatus() {
+    if (hasBridge()) return window.pywebview.api.get_tag_translate_status()
+    return { running: false, done: 0, pending: [] }
+  },
+
+  async followMaker(name, vndbId, displayName) {
+    if (hasBridge()) return window.pywebview.api.follow_maker(name, vndbId, displayName)
+    return { ok: true }
+  },
+
+  async unfollowMaker(name) {
+    if (hasBridge()) return window.pywebview.api.unfollow_maker(name)
+    return { ok: true }
+  },
+
+  async listFollows() {
+    if (hasBridge()) return window.pywebview.api.list_follows()
+    await delay()
+    return { ok: true, follows: [] }
+  },
 }

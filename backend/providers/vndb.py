@@ -74,12 +74,49 @@ def get(cfg, vndb_id):
 
 _VN_LIST_FIELDS = (
     "id,title,titles.title,titles.lang,released,image.url,rating,length,"
-    "relations.id,relations.title,relations.relation"
+    "tags.name,relations.id,relations.title,relations.relation"
 )
 
 
 def get_producer(cfg, name):
-    """按名称搜索厂商（VNDB producer），返回 {id,name,aliases,description,type} 或 None。"""
+    """按名称搜索厂商（VNDB producer），返回 {id,name,aliases,description,type} 或 None。
+    关键词自动展开：全名 → 去括号 → 纯英文 → 纯日文 → 拆词，取第一个有结果的。"""
+    kws = _producer_keywords(name)
+    last = None
+    for kw in kws:
+        prod, err = _producer_search(cfg, kw)
+        if err:
+            last = err
+            continue
+        if prod:
+            return prod, None
+    if last:
+        return None, last
+    return None, None
+
+
+def _producer_keywords(name):
+    """厂商名关键词展开：Miel (ミエル) → [Miel (ミエル), Miel, ミエル] 等。"""
+    import re
+    kws = [name.strip()]
+    base = re.sub(r"[（(].*?[)）]", "", name).strip()
+    if base and base not in kws:
+        kws.append(base)
+    en = " ".join(re.findall(r"[A-Za-z][A-Za-z0-9 .\-']*", name)).strip()
+    if en and en not in kws:
+        kws.append(en)
+    ja = re.sub(r"[^\u3040-\u30ff\u4e00-\u9fff]", "", name)
+    if ja and ja not in kws:
+        kws.append(ja)
+    for tok in re.split(r"[\s（）()/・、,，]+", base):
+        tok = tok.strip()
+        if len(tok) >= 2 and tok not in kws:
+            kws.append(tok)
+    return kws[:6]
+
+
+def _producer_search(cfg, keyword):
+    """单关键词搜 producer，返回最佳匹配（名称/别名精确匹配优先）。"""
     token = cfg.get("vndb_token", "")
     if not token:
         return None, "未配置 VNDB token"
@@ -87,9 +124,9 @@ def get_producer(cfg, name):
     try:
         data = http_post_json(
             s, f"{API}/producer",
-            json_body={"filters": ["search", "=", name],
+            json_body={"filters": ["search", "=", keyword],
                        "fields": "id,name,aliases,description,type",
-                       "sort": "searchrank", "results": 5},
+                       "sort": "searchrank", "results": 8},
             timeout=20,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Token {token}"})
@@ -98,8 +135,12 @@ def get_producer(cfg, name):
     results = data.get("results", [])
     if not results:
         return None, None
-    # 优先精确匹配名称，否则取第一个
-    best = next((r for r in results if r.get("name", "").lower() == name.lower()), results[0])
+    kw_l = keyword.lower()
+    best = next((r for r in results if r.get("name", "").lower() == kw_l), None)
+    if not best:
+        best = next((r for r in results if kw_l in (a.lower() for a in (r.get("aliases") or []))), None)
+    if not best:
+        best = results[0]
     return {
         "id": best.get("id", ""),
         "name": best.get("name", ""),
@@ -107,6 +148,28 @@ def get_producer(cfg, name):
         "description": (best.get("description") or "")[:1000],
         "type": best.get("type", ""),
     }, None
+
+
+def search_producers(cfg, keyword, limit=8):
+    """给用户手动更正的候选列表。"""
+    token = cfg.get("vndb_token", "")
+    if not token:
+        return [], "未配置 VNDB token"
+    s = http_session(cfg, proxy_ok=True)
+    try:
+        data = http_post_json(
+            s, f"{API}/producer",
+            json_body={"filters": ["search", "=", keyword],
+                       "fields": "id,name,aliases,type",
+                       "sort": "searchrank", "results": limit},
+            timeout=20,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Token {token}"})
+    except Exception as e:
+        return [], f"VNDB 请求失败: {e}"
+    return [{"id": r.get("id", ""), "name": r.get("name", ""),
+             "aliases": (r.get("aliases") or [])[:6], "type": r.get("type", "")}
+            for r in data.get("results", [])], None
 
 
 def _vn_list(cfg, filters, limit=50):
@@ -151,6 +214,7 @@ def _vn_list(cfg, filters, limit=50):
                 "rating": v.get("rating"),
                 "length_level": v.get("length"),
                 "relations": rels,
+                "tags": [t.get("name", "") for t in (v.get("tags") or [])][:12],
             })
         if len(results) < 50:
             break

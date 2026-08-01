@@ -80,6 +80,20 @@ CREATE TABLE IF NOT EXISTS vndb_work_cache (
     zh_title TEXT, zh_summary TEXT,
     fetched_at TEXT
 );
+CREATE TABLE IF NOT EXISTS producer_map (
+    maker_name TEXT PRIMARY KEY,
+    vndb_id TEXT, display_name TEXT,
+    updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS tag_cache (
+    en_name TEXT PRIMARY KEY,
+    zh_name TEXT
+);
+CREATE TABLE IF NOT EXISTS maker_follows (
+    maker_name TEXT PRIMARY KEY,
+    vndb_id TEXT, display_name TEXT,
+    created_at TEXT
+);
 """
 
 

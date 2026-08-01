@@ -30,8 +30,8 @@
               <span v-if="w.maker">🏢 {{ w.maker }}</span>
             </div>
 
-            <div v-if="w.tags && w.tags.length" class="wd-tags">
-              <span v-for="t in w.tags.slice(0, 8)" :key="t" class="wd-tag">#{{ t }}</span>
+            <div v-if="(w.tags_zh || w.tags) && (w.tags_zh || w.tags).length" class="wd-tags">
+              <span v-for="t in (w.tags_zh || w.tags).slice(0, 8)" :key="t" class="wd-tag">#{{ t }}</span>
             </div>
 
             <div class="wd-actions">
