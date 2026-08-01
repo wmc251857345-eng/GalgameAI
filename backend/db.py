@@ -1,30 +1,40 @@
-"""SQLite 数据库：schema v1、线程安全连接、行字典返回。"""
+"""SQLite 数据库：schema v2、线程安全、行字典返回。
+开发阶段：版本不一致时直接重建（正式版需迁移框架）。"""
 import os
 import sqlite3
 import threading
 
 from . import paths
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT, root TEXT,
     vndb_id TEXT, bgm_id INTEGER,
     title TEXT, title_en TEXT, title_jp TEXT, title_zh TEXT,
     aliases TEXT, maker TEXT, brand TEXT, released TEXT,
     rating REAL, length_level INTEGER, length_minutes INTEGER,
-    description TEXT, cover_path TEXT,
+    description TEXT,
+    cover_path TEXT, cover_url TEXT, cover_local TEXT,
     exe_path TEXT, workdir TEXT, launch_args TEXT,
     use_locale_emu INTEGER DEFAULT 0,
+    hanhua INTEGER DEFAULT 0, text_sample TEXT, size_bytes INTEGER DEFAULT 0,
     playtime_seconds INTEGER DEFAULT 0, last_played TEXT, added_at TEXT,
-    status INTEGER DEFAULT 0,            -- 0扫描到 1待确认 2已入库 3手动
+    status INTEGER DEFAULT 0,            -- 0扫描到 1待确认 2已入库 3手动/跳过
     match_confidence REAL, source TEXT   -- vndb|bgm|ai|manual
 );
+CREATE INDEX IF NOT EXISTS idx_games_path ON games(path);
+CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
+CREATE INDEX IF NOT EXISTS idx_games_vndb ON games(vndb_id);
+
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     game_id INTEGER, started_at TEXT, ended_at TEXT, seconds INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_sessions_game ON sessions(game_id);
+
 CREATE TABLE IF NOT EXISTS tags (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE, category TEXT
@@ -54,9 +64,12 @@ CREATE TABLE IF NOT EXISTS analysis_jobs (
     game_id INTEGER, stage TEXT, status TEXT,
     attempts INTEGER DEFAULT 0, error TEXT, updated_at TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
-CREATE INDEX IF NOT EXISTS idx_games_vndb ON games(vndb_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_game ON sessions(game_id);
+CREATE TABLE IF NOT EXISTS match_candidates (
+    game_id INTEGER, provider TEXT, external_id TEXT,
+    title TEXT, score REAL, payload TEXT,
+    PRIMARY KEY (game_id, provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_candidates_game ON match_candidates(game_id);
 """
 
 
@@ -75,8 +88,16 @@ class Database:
             return self._conn
 
     def init(self):
-        conn = self.connect()
         with self._lock:
+            conn = self.connect()
+            v = conn.execute("PRAGMA user_version").fetchone()[0]
+            if v != SCHEMA_VERSION:
+                tables = [r["name"] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+                for t in tables:
+                    conn.execute(f'DROP TABLE IF EXISTS "{t}"')
+                conn.execute("PRAGMA user_version = 0")
+                conn.commit()
             conn.executescript(_SCHEMA)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()

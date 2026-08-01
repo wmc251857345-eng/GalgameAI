@@ -180,3 +180,69 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .hint { font-size: 11.5px; color: var(--text-dim); }
 .actions { display: flex; align-items: center; gap: 12px; }
 .saved-ok { color: var(--green); font-size: 13px; }
+
+/* ---------- 详情页 ---------- */
+.back-btn { margin-bottom: 16px; }
+.detail-hero { display: flex; gap: 24px; margin-bottom: 8px; }
+.hero-cover { width: 300px; flex-shrink: 0; aspect-ratio: 2/3; border-radius: 6px; overflow: hidden; box-shadow: 0 4px 18px rgba(0,0,0,.5); background: linear-gradient(160deg, hsl(var(--hue) 45% 28%), hsl(calc(var(--hue) + 40) 55% 14%)); }
+.hero-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover-grad { position: absolute; inset: 0; }
+.cover-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.hero-info { flex: 1; min-width: 0; }
+.hero-title { color: var(--text-bright); font-size: 26px; font-weight: 800; margin-bottom: 10px; }
+.hero-tags { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.status-badge { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 10px; }
+.status-badge.ok { background: rgba(164, 208, 7, .18); color: var(--green); }
+.status-badge.warn { background: rgba(243, 156, 18, .18); color: #f39c12; }
+.status-badge.skip { background: rgba(143, 152, 160, .2); color: var(--text-dim); }
+.status-badge.hanhua { background: rgba(102, 192, 244, .18); color: var(--accent); }
+.status-badge.running { background: rgba(46, 204, 113, .2); color: #2ecc71; }
+.info-table { border-collapse: collapse; font-size: 13px; margin-bottom: 16px; }
+.info-table td { padding: 4px 14px 4px 0; vertical-align: top; }
+.info-table td:first-child { color: var(--text-dim); white-space: nowrap; }
+.path-cell { font-family: Consolas, monospace; font-size: 12px; color: var(--text-dim); word-break: break-all; }
+.hero-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.btn.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+.btn.small { padding: 5px 12px; font-size: 12px; margin-top: 0; }
+.le-toggle { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.detail-section { margin-top: 22px; }
+.detail-section h2 { color: var(--text-bright); font-size: 15px; margin-bottom: 10px; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.tag-chip { background: var(--panel-2); border: 1px solid var(--border); color: var(--accent); font-size: 12.5px; padding: 4px 12px; border-radius: 14px; }
+.desc { font-size: 13.5px; line-height: 1.8; color: var(--text); max-width: 900px; }
+.dim { color: var(--text-dim); font-size: 12.5px; }
+.local-info { margin-top: 14px; color: var(--text-dim); font-size: 12.5px; max-width: 900px; }
+.local-info summary { cursor: pointer; }
+.text-sample { white-space: pre-wrap; font-family: Consolas, monospace; font-size: 12px; margin-top: 8px; max-height: 300px; overflow-y: auto; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 12px; }
+
+/* ---------- 候选卡片 ---------- */
+.cand-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.cand-card { width: 190px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.cand-card.conf-high { border-color: rgba(164, 208, 7, .5); }
+.cand-card.conf-mid { border-color: rgba(243, 156, 18, .5); }
+.cand-card.conf-low { border-color: rgba(192, 57, 43, .5); }
+.cand-img { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: 4px; background: var(--bg-deep); }
+.cand-img-empty { background: linear-gradient(160deg, #2a3a4a, #101319); }
+.cand-title { font-size: 12.5px; color: var(--text-bright); line-height: 1.4; }
+.cand-meta { font-size: 11px; color: var(--text-dim); }
+.cand-score { font-size: 13px; font-weight: 800; color: var(--green); }
+
+/* ---------- 待确认列表 ---------- */
+.head-actions { margin-left: auto; }
+.pending-list { display: flex; flex-direction: column; gap: 14px; }
+.pending-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.pending-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.pending-folder { color: var(--text-bright); font-weight: 700; font-size: 15px; }
+.pending-path { color: var(--text-dim); font-size: 11.5px; font-family: Consolas, monospace; }
+.pending-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+/* ---------- 进度 ---------- */
+.progress-card { margin-top: 14px; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; max-width: 900px; }
+.progress-bar { height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green)); border-radius: 4px; transition: width .4s; }
+.progress-text { font-size: 12.5px; color: var(--text); margin-top: 8px; }
+.progress-log { margin-top: 8px; font-size: 11.5px; color: var(--text-dim); font-family: Consolas, monospace; line-height: 1.7; max-height: 220px; overflow-y: auto; }
+.root-row { display: flex; align-items: center; justify-content: space-between; background: var(--bg-deep); border: 1px solid var(--border); border-radius: 4px; padding: 7px 12px; margin-bottom: 8px; max-width: 640px; }
+.root-path { font-size: 12.5px; color: var(--text); font-family: Consolas, monospace; }
+.add-root { margin-top: 10px; }
+.add-root input { flex: 0 1 420px; }

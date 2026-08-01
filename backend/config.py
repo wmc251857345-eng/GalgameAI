@@ -15,6 +15,7 @@ DEFAULTS = {
         "search": False,
     },
     "proxy": {"enabled": False, "url": "http://127.0.0.1:7897"},
+    "vndb_token": "",
     "library_roots": [],
     "ui": {"theme": "dark", "language": "zh-CN"},
     "analysis": {"auto_confirm_threshold": 0.9, "concurrency": 2},

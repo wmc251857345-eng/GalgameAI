@@ -1,11 +1,10 @@
 // 前后端桥：pywebview 环境调用真实后端；浏览器开发环境自动降级为 mock。
-// 所有方法返回 Promise，前后端调用方式完全一致。
 const hasBridge = () =>
   typeof window !== 'undefined' && window.pywebview && window.pywebview.api
 
 const delay = (ms = 200) => new Promise((r) => setTimeout(r, ms))
 
-// ---------- mock 数据（Phase 0 预览用，Phase 1 起由后端提供） ----------
+// ---------- mock 数据（浏览器预览用） ----------
 const MOCK_GAMES = [
   { id: 1, title: '千恋万花', title_en: 'Senren * Banka', maker: 'Yuzusoft', year: '2016', score: 8.8, tags: ['纯爱', '废萌', '和风'], playtime_hours: 30.5, hue: 330, status: 2 },
   { id: 2, title: 'Summer Pockets', title_en: 'Summer Pockets', maker: 'Key', year: '2018', score: 9.1, tags: ['催泪', '夏', '全年龄'], playtime_hours: 42.0, hue: 200, status: 2 },
@@ -18,24 +17,35 @@ const MOCK_GAMES = [
 ]
 
 const MOCK_CONFIG = {
-  provider: { name: 'deepseek', model: 'deepseek-chat', api_key: '', base_url: '', vision: false, search: false },
+  provider: { name: 'custom', model: 'gcli-gemini-3-flash-preview-search', api_key: '', base_url: 'https://catiecli.sukaka.top/v1', vision: true, search: true },
   proxy: { enabled: false, url: 'http://127.0.0.1:7897' },
+  vndb_token: '',
   library_roots: [],
   ui: { theme: 'dark', language: 'zh-CN' },
   analysis: { auto_confirm_threshold: 0.9, concurrency: 2 },
 }
 
+const MOCK_PENDING = MOCK_GAMES.filter((g) => g.status === 1).map((g) => ({
+  ...g,
+  candidates: [
+    { ...g, provider: 'bgm', external_id: '12345', title: g.title, score: 0.92 },
+    { ...g, provider: 'vndb', external_id: 'v999', title: g.title_en, score: 0.55 },
+  ],
+}))
+
+const MOCK_ROOT = ['D:\\Games_HDD\\GalGame']
+
 // ---------- 导出 API ----------
 export const api = {
-  async ping() {
-    return hasBridge() ? window.pywebview.api.ping() : 'mock-pong'
-  },
+  // 基础
+  async ping() { return hasBridge() ? window.pywebview.api.ping() : 'mock-pong' },
 
   async getAppInfo() {
     if (hasBridge()) return window.pywebview.api.get_app_info()
-    return { name: 'GALA', version: '0.1.0', python: '3.11.9', platform: 'browser-mock', db_path: '(mock)' }
+    return { name: 'GALA', version: '0.2.0', python: '3.11.9', platform: 'browser-mock', db_path: '(mock)', base_url: '' }
   },
 
+  // 配置
   async getConfig() {
     if (hasBridge()) return window.pywebview.api.get_config()
     await delay()
@@ -52,6 +62,7 @@ export const api = {
     return JSON.parse(JSON.stringify(MOCK_CONFIG))
   },
 
+  // 库
   async getLibrarySummary() {
     if (hasBridge()) return window.pywebview.api.get_library_summary()
     await delay()
@@ -65,7 +76,7 @@ export const api = {
   },
 
   async listGames() {
-    if (hasBridge()) return window.pywebview.api.list_games(200, 0, 'title', '')
+    if (hasBridge()) return window.pywebview.api.list_games(1000, 0, 'title', '')
     await delay(300)
     return MOCK_GAMES
   },
@@ -73,6 +84,90 @@ export const api = {
   async getGame(id) {
     if (hasBridge()) return window.pywebview.api.get_game(id)
     await delay()
-    return MOCK_GAMES.find((g) => g.id === id) || null
+    const g = MOCK_GAMES.find((x) => x.id === id)
+    return g ? { ...g, candidates: MOCK_PENDING.find((p) => p.id === id)?.candidates || [], running: false } : null
+  },
+
+  async getPending() {
+    if (hasBridge()) return window.pywebview.api.get_pending()
+    await delay()
+    return MOCK_PENDING
+  },
+
+  // 扫描 / 分析
+  async scanLibrary() {
+    if (hasBridge()) return window.pywebview.api.scan_library()
+    return { ok: true }
+  },
+
+  async analyzePending() {
+    if (hasBridge()) return window.pywebview.api.analyze_pending()
+    return { ok: true }
+  },
+
+  async getScanProgress() {
+    if (hasBridge()) return window.pywebview.api.get_scan_progress()
+    return { running: false, stage: 'idle', total: 0, done: 0, current: '', error: null, log: [] }
+  },
+
+  async confirmMatch(gameId, provider, externalId) {
+    if (hasBridge()) return window.pywebview.api.confirm_match(gameId, provider, externalId)
+    await delay()
+    return { ok: true }
+  },
+
+  async markUnmatched(gameId) {
+    if (hasBridge()) return window.pywebview.api.mark_unmatched(gameId)
+    return { ok: true }
+  },
+
+  async reanalyzeGame(gameId) {
+    if (hasBridge()) return window.pywebview.api.reanalyze_game(gameId)
+    await delay(600)
+    return { ok: true }
+  },
+
+  // 库根目录
+  async listLibraryRoots() {
+    if (hasBridge()) return window.pywebview.api.list_library_roots()
+    await delay()
+    return [...MOCK_ROOT]
+  },
+
+  async addLibraryRoot(path) {
+    if (hasBridge()) return window.pywebview.api.add_library_root(path)
+    await delay()
+    MOCK_ROOT.push(path)
+    return { ok: true, roots: [...MOCK_ROOT] }
+  },
+
+  async removeLibraryRoot(path) {
+    if (hasBridge()) return window.pywebview.api.remove_library_root(path)
+    await delay()
+    const i = MOCK_ROOT.indexOf(path)
+    if (i >= 0) MOCK_ROOT.splice(i, 1)
+    return { ok: true, roots: [...MOCK_ROOT] }
+  },
+
+  // 启动
+  async launchGame(id) {
+    if (hasBridge()) return window.pywebview.api.launch_game(id)
+    await delay()
+    return { ok: true, pid: 12345 }
+  },
+
+  async stopGame(id) {
+    if (hasBridge()) return window.pywebview.api.stop_game(id)
+    return { ok: true }
+  },
+
+  async getRunning() {
+    if (hasBridge()) return window.pywebview.api.get_running()
+    return {}
+  },
+
+  async setLocaleEmu(id, enabled) {
+    if (hasBridge()) return window.pywebview.api.set_locale_emu(id, enabled)
+    return { ok: true }
   },
 }
