@@ -1052,7 +1052,7 @@ class JsApi:
         else:
             self._db.execute(
                 "INSERT OR IGNORE INTO maker_follows (maker_name, vndb_id, display_name, created_at)"
-                " VALUES (?,,'',?,?)", (name, name, now_iso()))
+                " VALUES (?,?,?,?)", (name, "", display_name or name, now_iso()))
         return {"ok": True}
 
     def unfollow_maker(self, maker_name):
