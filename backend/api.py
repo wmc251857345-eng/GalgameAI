@@ -3,7 +3,9 @@
 """
 import json
 import os
+import sqlite3
 import threading
+import time
 
 from . import launcher, paths
 from .utils import now_iso
@@ -31,12 +33,31 @@ def _cover_url(path):
     return f"{BASE_URL}/{p}"
 
 
-def _game_row(g, with_extra=False):
+def _rating_disp(r):
+    """VNDB 原始评分是 0-100 制，展示统一转 10 分制（<=20 视为已是 10 分制）。"""
+    if isinstance(r, (int, float)) and r > 20:
+        return round(r / 10, 1)
+    return r
+
+
+def _tags(db, game_id):
+    return db.query(
+        "SELECT t.name FROM tags t JOIN game_tags gt ON t.id=gt.tag_id"
+        " WHERE gt.game_id=? ORDER BY gt.rowid", (game_id,))
+
+
+def _game_row(g, db, with_extra=False):
     row = dict(g)
-    row["cover_url"] = _cover_url(g.get("cover_path"))
+    # 封面：本地文件优先；没有本地文件但有远程 URL 时直接显示远程图
+    row["cover_url"] = (_cover_url(g.get("cover_path"))
+                        or (g.get("cover_url")
+                            if str(g.get("cover_url") or "").startswith("http") else None))
+    row["rating_disp"] = _rating_disp(g.get("rating"))
+    row["score"] = row["rating_disp"]            # 网格卡片 hover 用
+    row["hue"] = (int(g["id"] or 0) * 47) % 360  # 无封面时占位渐变主色
     row["playtime_hours"] = round((g.get("playtime_seconds") or 0) / 3600, 1)
     if with_extra:
-        row["tags"] = [t["name"] for t in _tags(g["id"])]
+        row["tags"] = [t["name"] for t in _tags(db, g["id"])]
     return row
 
 
@@ -88,21 +109,19 @@ class JsApi:
             params = [f"%{query}%"] * 4
         sql += f" ORDER BY {order} LIMIT ? OFFSET ?"
         params += [int(limit), int(offset)]
-        return [_game_row(g) for g in self._db.query(sql, params)]
+        return [_game_row(g, self._db) for g in self._db.query(sql, params)]
 
     def get_game(self, game_id):
         g = self._db.query_one("SELECT * FROM games WHERE id=?", (int(game_id),))
         if not g:
             return None
-        row = _game_row(g, with_extra=True)
-        row["candidates"] = self._candidates(game_id) if g["status"] == 1 else []
+        row = _game_row(g, self._db, with_extra=True)
+        row["candidates"] = self._candidates(game_id)  # 详情页编辑封面时可从候选选图
         row["running"] = game_id in launcher.running_ids()
         return row
 
     def _tags(self, game_id):
-        return self._db.query(
-            "SELECT t.name FROM tags t JOIN game_tags gt ON t.id=gt.tag_id"
-            " WHERE gt.game_id=? ORDER BY gt.rowid", (game_id,))
+        return _tags(self._db, game_id)
 
     def _candidates(self, game_id):
         out = []
@@ -165,7 +184,7 @@ class JsApi:
     def get_pending(self):
         rows = []
         for g in self._db.query("SELECT * FROM games WHERE status=1 ORDER BY id"):
-            row = _game_row(g)
+            row = _game_row(g, self._db)
             row["candidates"] = self._candidates(g["id"])
             rows.append(row)
         return rows
@@ -231,8 +250,8 @@ class JsApi:
     # ---------- 手动编辑 ----------
     EDITABLE = {
         "title", "title_jp", "title_en", "title_zh", "maker", "brand",
-        "released", "rating", "length_minutes", "description",
-        "exe_path", "workdir", "launch_args", "use_locale_emu", "status",
+        "released", "rating", "length_minutes", "length_level", "description",
+        "exe_path", "workdir", "launch_args", "use_locale_emu", "hanhua", "status",
     }
 
     def update_game(self, game_id, fields):
@@ -248,6 +267,8 @@ class JsApi:
                 v = v.strip()
                 if v == "":
                     v = None
+            if k == "hanhua":
+                v = 1 if v else 0
             clean[k] = v
         if not clean:
             return {"ok": False, "error": "没有可更新的字段"}
@@ -255,7 +276,7 @@ class JsApi:
         sets = ", ".join(f"{k}=?" for k in clean)
         params = list(clean.values()) + [gid]
         self._db.execute(f"UPDATE games SET {sets}, source='manual' WHERE id=?", params)
-        return {"ok": True, "game": _game_row(self._db.query_one("SELECT * FROM games WHERE id=?", (gid,)))}
+        return {"ok": True, "game": _game_row(self._db.query_one("SELECT * FROM games WHERE id=?", (gid,)), self._db)}
 
     def update_tags(self, game_id, tags):
         gid = int(game_id)
@@ -315,10 +336,110 @@ class JsApi:
 
     def remove_game(self, game_id):
         gid = int(game_id)
-        self._db.execute("DELETE FROM match_candidates WHERE game_id=?", (gid,))
-        self._db.execute("DELETE FROM game_tags WHERE game_id=?", (gid,))
+        g = self._db.query_one("SELECT cover_path FROM games WHERE id=?", (gid,))
+        for t in ("match_candidates", "game_tags", "sessions", "staff",
+                  "screenshots", "analysis_jobs"):
+            self._db.execute(f"DELETE FROM {t} WHERE game_id=?", (gid,))
         self._db.execute("DELETE FROM games WHERE id=?", (gid,))
+        # 删除该游戏的封面缓存文件（仅限 cache/covers 内）
+        if g and g.get("cover_path"):
+            p = os.path.join(paths.BASE, g["cover_path"].replace("/", os.sep))
+            try:
+                if os.path.dirname(p) == paths.COVERS_DIR and os.path.exists(p):
+                    os.remove(p)
+            except OSError:
+                pass
         return {"ok": True}
+
+    # ---------- 封面维护 ----------
+    def refresh_cover(self, game_id):
+        """单个游戏补封面：vndb_id 精确取 → 否则 bgm 搜索 → 否则用候选里的封面。"""
+        from . import enrich
+        from .providers import bgm, vndb
+        gid = int(game_id)
+        g = self._db.query_one("SELECT * FROM games WHERE id=?", (gid,))
+        if not g:
+            return {"ok": False, "error": "游戏不存在"}
+        url = None
+        if g.get("vndb_id"):
+            cand, _ = vndb.get(self._cfg, g["vndb_id"])
+            if cand and cand.get("cover_url"):
+                url = cand["cover_url"]
+        if not url:
+            try:
+                kw = g.get("title") or g.get("title_jp") or ""
+                cands = bgm.search(self._cfg, kw)
+                if cands and cands[0].get("cover_url"):
+                    url = cands[0]["cover_url"]
+            except Exception:
+                pass
+        if not url:
+            for c in self._db.query(
+                    "SELECT payload FROM match_candidates WHERE game_id=? ORDER BY score DESC",
+                    (gid,)):
+                try:
+                    p = json.loads(c["payload"])
+                    if p.get("cover_url"):
+                        url = p["cover_url"]
+                        break
+                except Exception:
+                    continue
+        if not url:
+            return {"ok": False, "error": "没有可用封面来源（无 vndb/bgm/候选封面）"}
+        rel = enrich.download_cover(self._cfg, gid, url)
+        if not rel:
+            return {"ok": False, "error": "封面下载失败"}
+        self._db.execute("UPDATE games SET cover_path=?, cover_url=? WHERE id=?",
+                         (rel, url, gid))
+        return {"ok": True, "cover_url": _cover_url(rel)}
+
+    def fill_missing_covers(self):
+        """后台线程：为所有已入库但缺封面的游戏批量补封面。"""
+        global _scan_thread
+        from . import enrich
+        if enrich.STATE["running"]:
+            return {"ok": False, "error": "已有任务在运行"}
+        t = threading.Thread(target=enrich.fill_covers_all,
+                             args=(self._cfg, self._db), daemon=True)
+        _scan_thread = t
+        t.start()
+        return {"ok": True}
+
+    # ---------- 导出 / 备份 ----------
+    def export_games(self):
+        """导出全部游戏（含标签）为 JSON 到 database/export/。"""
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        out_dir = os.path.join(paths.BASE, "database", "export")
+        os.makedirs(out_dir, exist_ok=True)
+        out = os.path.join(out_dir, f"games_{ts}.json")
+        data = []
+        for g in self._db.query("SELECT * FROM games ORDER BY id"):
+            row = _game_row(g, self._db, with_extra=True)
+            row.pop("cover_url", None)  # 含端口信息，导出时去掉
+            data.append(row)
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return {"ok": True, "path": out, "count": len(data)}
+
+    def backup_db(self):
+        """在线备份 library.db + config.json 到 database/backup/<时间戳>/。"""
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        out_dir = os.path.join(paths.BASE, "database", "backup", ts)
+        os.makedirs(out_dir, exist_ok=True)
+        dest = os.path.join(out_dir, "library.db")
+        conn = self._db.connect()
+        with self._db._lock:
+            target = sqlite3.connect(dest)
+            try:
+                conn.backup(target)
+            finally:
+                target.close()
+        try:
+            import shutil
+            shutil.copyfile(paths.CONFIG_FILE, os.path.join(out_dir, "config.json"))
+        except OSError:
+            pass
+        return {"ok": True, "path": out_dir}
 
     # ---------- 启动 / 时长 ----------
     def launch_game(self, game_id):

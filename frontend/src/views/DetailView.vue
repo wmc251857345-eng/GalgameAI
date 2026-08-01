@@ -29,7 +29,7 @@
             <tr><td>英文名</td><td>{{ g.title_en || '—' }}</td></tr>
             <tr><td>制作</td><td>{{ g.maker || '—' }}</td></tr>
             <tr><td>发售</td><td>{{ g.released || '—' }}</td></tr>
-            <tr><td>评分</td><td>{{ g.rating != null ? '★ ' + g.rating : '—' }}</td></tr>
+            <tr><td>评分</td><td>{{ g.rating_disp != null ? '★ ' + g.rating_disp : '—' }}</td></tr>
             <tr><td>时长</td><td>{{ lengthText }}</td></tr>
             <tr><td>游玩</td><td>{{ g.playtime_hours }}h<template v-if="g.last_played"> · 最近 {{ g.last_played }}</template></td></tr>
             <tr><td>本地路径</td><td class="path-cell">{{ g.path }}</td></tr>
@@ -48,7 +48,9 @@
             <tr><td>评分</td><td><input v-model.number="form.rating" type="number" step="0.1" min="0" max="10" placeholder="0-10" /></td></tr>
             <tr><td>时长(分钟)</td><td><input v-model.number="form.length_minutes" type="number" min="0" placeholder="约多少分钟" /></td></tr>
             <tr><td>启动 exe</td><td><input v-model="form.exe_path" placeholder="exe 绝对路径" /></td></tr>
+            <tr><td>工作目录</td><td><input v-model="form.workdir" placeholder="可选，默认 exe 所在目录" /></td></tr>
             <tr><td>启动参数</td><td><input v-model="form.launch_args" placeholder="可选" /></td></tr>
+            <tr><td>汉化</td><td><input v-model="form.hanhua" type="checkbox" style="width:auto;height:auto;accent-color:var(--accent)" /></td></tr>
             <tr><td>简介</td><td><textarea v-model="form.description" rows="4" placeholder="中文简介"></textarea></td></tr>
           </table>
 
@@ -78,9 +80,21 @@
       <div v-if="editing" class="detail-section cover-edit">
         <h2>封面</h2>
         <div class="cover-tools">
-          <button class="btn" @click="pickLocal">🖼 选择本地图片</button>
+          <button class="btn small" @click="pickLocal">🖼 选择本地图片</button>
+          <button class="btn small" @click="refreshCover">⟳ 从 VNDB 补封面</button>
           <input v-model="coverUrlInput" class="url-input" placeholder="或粘贴图片 URL 下载" @keyup.enter="setUrl" />
-          <button class="btn" @click="setUrl">下载</button>
+          <button class="btn small" @click="setUrl">下载</button>
+        </div>
+        <div v-if="coverCands.length" class="cover-cands">
+          <span class="dim">候选封面（点击选用）：</span>
+          <img
+            v-for="(c, i) in coverCands"
+            :key="i"
+            :src="c.cover_url"
+            class="cover-cand"
+            :title="(c.provider || '').toUpperCase() + ' · ' + (c.title || '')"
+            @click="useCandCover(c.cover_url)"
+          />
         </div>
       </div>
 
@@ -165,13 +179,18 @@ function confClass(score) {
 }
 
 // ---- 编辑 ----
+const coverCands = computed(() =>
+  (g.value?.candidates || []).filter((c) => c.cover_url).slice(0, 6),
+)
+
 function startEdit() {
   const d = g.value
   Object.assign(form, {
     title: d.title || '', title_zh: d.title_zh || '', title_jp: d.title_jp || '',
     title_en: d.title_en || '', maker: d.maker || '', released: d.released || '',
-    rating: d.rating, length_minutes: d.length_minutes, description: d.description || '',
-    exe_path: d.exe_path || '', launch_args: d.launch_args || '',
+    rating: d.rating_disp, length_minutes: d.length_minutes, description: d.description || '',
+    exe_path: d.exe_path || '', workdir: d.workdir || '', launch_args: d.launch_args || '',
+    hanhua: !!d.hanhua,
   })
   editTags.value = [...(d.tags || [])]
   editing.value = true
@@ -225,6 +244,18 @@ async function setUrl() {
     coverUrlInput.value = ''
     store.refreshDetail()
   }
+}
+
+async function refreshCover() {
+  const r = await api.refreshCover(g.value.id)
+  if (r && !r.ok) alert(r.error)
+  else store.refreshDetail()
+}
+
+async function useCandCover(url) {
+  const r = await api.setCoverUrl(g.value.id, url)
+  if (r && !r.ok) alert(r.error)
+  else store.refreshDetail()
 }
 
 // ---- 动作 ----

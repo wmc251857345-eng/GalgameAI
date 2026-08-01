@@ -21,6 +21,7 @@
 <script setup>
 import { onMounted } from 'vue'
 import { useLibraryStore } from './stores/library.js'
+import { apiReady } from './api.js'
 import Sidebar from './components/Sidebar.vue'
 import TopBar from './components/TopBar.vue'
 import LibraryView from './views/LibraryView.vue'
@@ -30,7 +31,8 @@ import StatsView from './views/StatsView.vue'
 import SettingsView from './views/SettingsView.vue'
 
 const store = useLibraryStore()
-onMounted(() => {
+onMounted(async () => {
+  await apiReady() // 等 pywebview 桥接注入完成再加载真实数据（修复 mock 竞态）
   store.load()
   store.loadRoots()
   store.refreshRunning()

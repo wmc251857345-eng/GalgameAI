@@ -272,3 +272,9 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
   flex: 1; min-width: 260px; background: var(--bg-deep); border: 1px solid var(--border);
   color: var(--text-bright); border-radius: 4px; padding: 7px 10px; font-size: 13px; outline: none;
 }
+.cover-cands { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.cover-cand {
+  width: 52px; aspect-ratio: 2/3; object-fit: cover; border-radius: 3px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-deep);
+}
+.cover-cand:hover { border-color: var(--accent); transform: translateY(-2px); }

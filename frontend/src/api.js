@@ -4,6 +4,33 @@ const hasBridge = () =>
 
 const delay = (ms = 200) => new Promise((r) => setTimeout(r, ms))
 
+// ---------- 桥接就绪等待（修复启动竞态：Vue 挂载可能早于 pywebview 注入 js_api，
+// 导致 store.load() 走了 mock 分支、整个应用显示假数据。必须等 pywebviewready） ----------
+let _bridgePromise = null
+export const apiReady = () => {
+  if (!_bridgePromise) {
+    _bridgePromise = new Promise((resolve) => {
+      if (hasBridge()) return resolve(true)
+      let done = false
+      const finish = (v) => {
+        if (done) return
+        done = true
+        clearInterval(iv)
+        window.removeEventListener('pywebviewready', onReady)
+        resolve(v)
+      }
+      const onReady = () => finish(true)
+      const t0 = Date.now()
+      const iv = setInterval(() => {
+        if (hasBridge()) finish(true)
+        else if (Date.now() - t0 > 8000) finish(false)
+      }, 100)
+      window.addEventListener('pywebviewready', onReady)
+    })
+  }
+  return _bridgePromise
+}
+
 // ---------- mock 数据（浏览器预览用） ----------
 const MOCK_GAMES = [
   { id: 1, title: '千恋万花', title_en: 'Senren * Banka', maker: 'Yuzusoft', year: '2016', score: 8.8, tags: ['纯爱', '废萌', '和风'], playtime_hours: 30.5, hue: 330, status: 2 },
@@ -200,5 +227,30 @@ export const api = {
     if (hasBridge()) return window.pywebview.api.remove_game(id)
     await delay()
     return { ok: true }
+  },
+
+  // 封面 / 维护
+  async refreshCover(id) {
+    if (hasBridge()) return window.pywebview.api.refresh_cover(id)
+    await delay()
+    return { ok: true }
+  },
+
+  async fillMissingCovers() {
+    if (hasBridge()) return window.pywebview.api.fill_missing_covers()
+    await delay()
+    return { ok: true }
+  },
+
+  async exportGames() {
+    if (hasBridge()) return window.pywebview.api.export_games()
+    await delay()
+    return { ok: true, path: '(mock)' }
+  },
+
+  async backupDb() {
+    if (hasBridge()) return window.pywebview.api.backup_db()
+    await delay()
+    return { ok: true, path: '(mock)' }
   },
 }

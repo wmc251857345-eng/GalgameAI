@@ -12,9 +12,7 @@
 
     <div v-if="store.scan.running" class="progress-card">
       <div class="progress-bar"><div class="progress-fill" :style="{ width: progressPct + '%' }"></div></div>
-      <div class="progress-text">{{ store.scan.stage === 'analyze' ? '分析' : '扫描' }}中：
-        {{ store.scan.current }}（{{ store.scan.done }}/{{ store.scan.total }}）
-      </div>
+      <div class="progress-text">{{ stageLabel }}：{{ store.scan.current }}（{{ store.scan.done }}/{{ store.scan.total }}）</div>
       <div class="progress-log"><div v-for="(l, i) in store.scan.log.slice(-6)" :key="i">{{ l }}</div></div>
     </div>
 
@@ -66,6 +64,10 @@ const progressPct = computed(() => {
   const { total, done } = store.scan
   return total ? Math.round((done / total) * 100) : 0
 })
+
+const stageLabel = computed(
+  () => ({ scan: '扫描', analyze: 'AI分析', covers: '补封面' }[store.scan.stage] || store.scan.stage),
+)
 
 function confClass(score) {
   return score >= 0.8 ? 'high' : score >= 0.6 ? 'mid' : 'low'

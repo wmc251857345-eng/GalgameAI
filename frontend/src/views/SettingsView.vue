@@ -34,6 +34,16 @@
           <input v-model="cfg.provider.base_url" placeholder="OpenAI 兼容地址，如 https://xxx/v1" />
         </div>
         <div class="row">
+          <label>视觉（封面识别）</label>
+          <input v-model="cfg.provider.vision" type="checkbox" />
+          <span class="hint">把本地封面图发给 AI 辅助识别（需模型支持图像）</span>
+        </div>
+        <div class="row">
+          <label>联网搜索</label>
+          <input v-model="cfg.provider.search" type="checkbox" />
+          <span class="hint">预留开关：AI 自带搜索能力</span>
+        </div>
+        <div class="row">
           <label>VNDB Token</label>
           <input v-model="cfg.vndb_token" type="password" placeholder="可选，填了才有 VNDB 数据（时长/评分）" />
         </div>
@@ -68,17 +78,23 @@
         </div>
         <div class="row" style="margin-top: 14px">
           <button class="btn primary" :disabled="store.scan.running" @click="scan">
-            {{ store.scan.running ? '扫描中…' : '🔍 扫描新游戏' }}
+            {{ store.scan.running ? '任务运行中…' : '🔍 扫描新游戏' }}
           </button>
           <button class="btn" :disabled="store.scan.running" @click="store.startAnalyze()">
             🤖 开始 AI 分析
           </button>
         </div>
+        <div class="row" style="margin-top: 6px">
+          <button class="btn small" :disabled="store.scan.running" @click="fillCovers">
+            🖼 补齐缺失封面
+          </button>
+          <button class="btn small" @click="exportGames">📤 导出库 JSON</button>
+          <button class="btn small" @click="backupDb">💾 备份数据库</button>
+        </div>
+        <div v-if="taskMsg" class="hint" style="margin-top: 8px">{{ taskMsg }}</div>
         <div v-if="store.scan.running" class="progress-card">
           <div class="progress-bar"><div class="progress-fill" :style="{ width: progressPct + '%' }"></div></div>
-          <div class="progress-text">{{ store.scan.stage === 'analyze' ? '分析' : '扫描' }}中：
-            {{ store.scan.current }}（{{ store.scan.done }}/{{ store.scan.total }}）
-          </div>
+          <div class="progress-text">{{ stageLabel }}：{{ store.scan.current }}（{{ store.scan.done }}/{{ store.scan.total }}）</div>
         </div>
         <div v-if="store.scan.log.length" class="progress-log">
           <div v-for="(l, i) in store.scan.log.slice(-8)" :key="i">{{ l }}</div>
@@ -121,6 +137,11 @@ const saving = ref(false)
 const saved = ref(false)
 const bridgeMode = ref('')
 const newRoot = ref('')
+const taskMsg = ref('')
+
+const stageLabel = computed(
+  () => ({ scan: '扫描', analyze: 'AI分析', covers: '补封面' }[store.scan.stage] || store.scan.stage),
+)
 
 const providerHint = computed(() => {
   const m = {
@@ -165,6 +186,26 @@ async function removeRoot(p) {
 async function scan() {
   await save()
   store.startScan()
+}
+
+async function fillCovers() {
+  await save()
+  const r = await api.fillMissingCovers()
+  if (r && !r.ok) alert(r.error)
+  else {
+    taskMsg.value = '正在补齐缺失封面…（进度见上方）'
+    store.pollScan()
+  }
+}
+
+async function exportGames() {
+  const r = await api.exportGames()
+  taskMsg.value = r?.ok ? `已导出 ${r.count} 个游戏 → ${r.path}` : (r?.error || '导出失败')
+}
+
+async function backupDb() {
+  const r = await api.backupDb()
+  taskMsg.value = r?.ok ? `备份完成 → ${r.path}` : (r?.error || '备份失败')
 }
 
 async function save() {

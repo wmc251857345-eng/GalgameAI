@@ -66,6 +66,9 @@ def _apply_match(cfg, db, game, cand):
                                 game.get("cover_local"))
     bgm_id = int(cand["external_id"]) if cand["provider"] == "bgm" and cand["external_id"].isdigit() else None
     vndb_id = cand["external_id"] if cand["provider"] == "vndb" else None
+    rating = cand.get("rating")
+    if isinstance(rating, (int, float)) and rating > 20:  # VNDB 0-100 → 统一 10 分制
+        rating = round(rating / 10, 2)
     db.execute(
         """UPDATE games SET title=?, title_en=?, title_jp=?, maker=?, released=?,
            rating=?, description=?, cover_path=?, cover_url=?, vndb_id=?, bgm_id=?,
@@ -74,7 +77,7 @@ def _apply_match(cfg, db, game, cand):
         (cand.get("title") or game["title"],
          cand.get("title") or "", cand.get("title_orig") or "",
          cand.get("maker") or "", cand.get("released") or "",
-         cand.get("rating"), cand.get("summary") or "",
+         rating, cand.get("summary") or "",
          cover_path, cand.get("cover_url") or "",
          vndb_id, bgm_id,
          cand.get("length_level"), cand.get("length_minutes"),
@@ -257,6 +260,49 @@ def analyze_all(cfg, db):
             except Exception as e:
                 _log(f"[{i}/{len(games)}] {g['title']} 失败: {e}")
             time.sleep(0.3)
+    except Exception as e:
+        _set(error=str(e))
+    finally:
+        _set(running=False, stage="idle", current="", done=STATE["total"])
+
+
+def fill_covers_all(cfg, db):
+    """批量补封面：status=2 且无本地封面的游戏，vndb_id 精确取 → bgm 搜索兜底。"""
+    if STATE["running"]:
+        return
+    _set(running=True, stage="covers", total=0, done=0, current="", error=None)
+    try:
+        from .providers import bgm, vndb
+        games = db.query(
+            "SELECT * FROM games WHERE status=2 AND (cover_path IS NULL OR cover_path='') ORDER BY id")
+        _set(total=len(games))
+        done = 0
+        for g in games:
+            if not STATE["running"]:
+                break
+            _set(current=g["title"], done=done)
+            url = None
+            if g.get("vndb_id"):
+                cand, _ = vndb.get(cfg, g["vndb_id"])
+                if cand and cand.get("cover_url"):
+                    url = cand["cover_url"]
+            if not url:
+                try:
+                    cands = bgm.search(cfg, g.get("title") or g.get("title_jp") or "")
+                    if cands and cands[0].get("cover_url"):
+                        url = cands[0]["cover_url"]
+                except Exception:
+                    pass
+            if url:
+                rel = download_cover(cfg, g["id"], url)
+                if rel:
+                    db.execute("UPDATE games SET cover_path=?, cover_url=? WHERE id=?",
+                               (rel, url, g["id"]))
+                    _log(f"  封面 ✓ {g['title']}")
+            done += 1
+            _set(done=done)
+            time.sleep(0.15)
+        _log(f"补齐封面完成: 处理 {done} 个")
     except Exception as e:
         _set(error=str(e))
     finally:
