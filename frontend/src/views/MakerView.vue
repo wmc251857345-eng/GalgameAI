@@ -296,11 +296,13 @@ onMounted(() => {
   if (tags.size) store.ensureTagTranslate([...tags])
 })
 
-// 标签/标题翻译完成 → 刷新档案（后端缓存命中会实时应用最新中文）
+// 标签/标题翻译完成 → 刷新档案一次（后端 gave_up 机制已根治循环；这里仅刷新单次）
+let _refreshedOnce = false
 watch(
   () => store.tagTranslating || store.workTranslating,
   (v, old) => {
-    if (old && !v && store.currentView === 'maker' && profile.value) {
+    if (old && !v && store.currentView === 'maker' && profile.value && !_refreshedOnce) {
+      _refreshedOnce = true
       store.loadMakerProfile(store.maker.key)
     }
   },

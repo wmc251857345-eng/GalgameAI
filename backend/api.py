@@ -148,6 +148,11 @@ _TAG_JOB = {"running": False, "pending": [], "done": 0, "error": None}
 # 作品标题批量翻译任务（单槽）：{vndb_id: {title, title_jp}}
 _WORK_JOB = {"running": False, "pending": {}, "done": 0, "error": None}
 
+# 已放弃的翻译条目（LLM 反复译不出的标签/标题；进程内记忆，避免每次刷新档案都重复触发翻译任务
+# → 前端 watch 循环刷新 → UI 卡死）。重启后清空，给一次重试机会。
+_TAG_GAVE_UP = set()
+_WORK_GAVE_UP = set()
+
 
 class JsApi:
     def __init__(self, db, config):
@@ -1029,6 +1034,9 @@ class JsApi:
         tags = [str(t).strip() for t in (tags or []) if str(t).strip()]
         if not tags:
             return {"ok": False, "error": "没有可翻译的标签"}
+        tags = [t for t in tags if t not in _TAG_GAVE_UP]  # 已放弃的跳过（防刷新死循环）
+        if not tags:
+            return {"ok": True, "translated": 0}
         have = {r["en_name"] for r in self._db.query(
             "SELECT en_name FROM tag_cache WHERE en_name IN (%s)" % ",".join("?" * len(tags)), tags)}
         missing = [t for t in tags if t not in have][:30]
@@ -1083,6 +1091,8 @@ class JsApi:
                     attempts[t] = attempts.get(t, 0) + 1
                     if attempts[t] < 2:
                         still_missing.append(t)
+                    else:
+                        _TAG_GAVE_UP.add(t)  # 反复失败 → 放弃，防下次刷新重复触发
                 with _new_lock:
                     cur = set(_TAG_JOB.get("pending", []))
                     cur.difference_update(batch)
@@ -1109,7 +1119,7 @@ class JsApi:
         items = {}
         for w in works or []:
             vid = str(w.get("id") or "").strip()
-            if vid and w.get("title"):
+            if vid and w.get("title") and vid not in _WORK_GAVE_UP:  # 已放弃的跳过
                 items[vid] = {"title": w["title"], "title_jp": w.get("title_jp") or ""}
         if not items:
             return {"ok": True, "translated": 0}
@@ -1167,6 +1177,8 @@ class JsApi:
                     attempts[vid] = attempts.get(vid, 0) + 1
                     if attempts[vid] < 2:
                         still[vid] = v
+                    else:
+                        _WORK_GAVE_UP.add(vid)  # 反复失败 → 放弃，防刷新死循环
                 with _new_lock:
                     cur = dict(_WORK_JOB.get("pending", {}))
                     for vid in batch:
