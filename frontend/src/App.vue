@@ -12,10 +12,12 @@
         <DetailView v-else-if="store.currentView === 'detail'" />
         <ChatView v-else-if="store.currentView === 'chat'" />
         <MakerView v-else-if="store.currentView === 'maker'" />
+        <MakersWallView v-else-if="store.currentView === 'makers'" />
         <PendingView v-else-if="store.currentView === 'pending'" />
         <StatsView v-else-if="store.currentView === 'stats'" />
         <SettingsView v-else />
       </div>
+      <WorkDetailPanel />
     </div>
   </div>
 </template>
@@ -30,6 +32,8 @@ import LibraryView from './views/LibraryView.vue'
 import DetailView from './views/DetailView.vue'
 import ChatView from './views/ChatView.vue'
 import MakerView from './views/MakerView.vue'
+import MakersWallView from './views/MakersWallView.vue'
+import WorkDetailPanel from './components/WorkDetailPanel.vue'
 import PendingView from './views/PendingView.vue'
 import StatsView from './views/StatsView.vue'
 import SettingsView from './views/SettingsView.vue'

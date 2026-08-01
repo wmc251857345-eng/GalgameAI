@@ -108,12 +108,12 @@ def chat(cfg, messages, json_mode=True, vision_image=None, timeout=40):
     return resp, None
 
 
-def chat_json(cfg, system, user, vision_image=None):
+def chat_json(cfg, system, user, vision_image=None, timeout=40):
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    resp, err = chat(cfg, messages, json_mode=True, vision_image=vision_image)
+    resp, err = chat(cfg, messages, json_mode=True, vision_image=vision_image, timeout=timeout)
     if err or not resp:
         return None, err
     try:

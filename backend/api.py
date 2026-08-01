@@ -133,6 +133,14 @@ def _game_row(g, db, with_extra=False):
 _maker_cache = {}
 _series_cache = {}
 
+# 新作推荐：后台抓取状态 + 结果
+_NEW_STATE = {"running": False, "stage": "", "done": 0, "total": 0, "error": None}
+_NEW_RELEASES = []
+_new_lock = threading.Lock()
+
+# 作品中文翻译任务（单槽）
+_TRANSLATE_JOB = {"running": False, "vndb_id": None, "done": False, "error": None}
+
 
 class JsApi:
     def __init__(self, db, config):
@@ -718,6 +726,180 @@ class JsApi:
                   "total_count": len(works)}
         _series_cache[sid] = (now, result)
         return result
+
+    # ---------- 厂商墙 / 新作推荐 / 作品详情 ----------
+    @staticmethod
+    def _maker_key(name):
+        """厂商归一化键：小写 + 去括号后缀（Miel (ミエル) → miel），用于合并同名异写。"""
+        import re
+        s = re.sub(r"[（(].*?[)）]", "", name).lower()
+        return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", s)
+
+    def get_makers_wall(self):
+        """厂商墙：本地库聚合的厂商列表（本地游戏数 + 代表作封面），近似名自动合并。"""
+        import difflib
+        rows = self._db.query(
+            "SELECT maker, COUNT(*) c FROM games"
+            " WHERE maker IS NOT NULL AND maker!='' GROUP BY maker")
+        groups = []  # [{"names": [...], "keys": [...]}]
+        for r in rows:
+            maker = r["maker"]
+            key = self._maker_key(maker)
+            if not key:
+                continue
+            for g in groups:
+                if any(difflib.SequenceMatcher(None, key, k).ratio() >= 0.8 for k in g["keys"]):
+                    g["names"].append(maker)
+                    g["keys"].append(key)
+                    g["count"] += r["c"]
+                    break
+            else:
+                groups.append({"names": [maker], "keys": [key], "count": r["c"]})
+        wall = []
+        for g in groups:
+            # 用出现最多的写法做展示名
+            name_counts = {}
+            for n in g["names"]:
+                name_counts[n] = name_counts.get(n, 0) + 1
+            display = max(name_counts, key=name_counts.get)
+            names = g["names"]
+            placeholders = ",".join("?" * len(names))
+            games = self._db.query(
+                f"SELECT id, title, cover_path FROM games WHERE maker IN ({placeholders})"
+                " ORDER BY favorite DESC, playtime_seconds DESC LIMIT 6", names)
+            covers = [x["cover_path"] for x in games if x["cover_path"]]
+            wall.append({
+                "maker": display,
+                "local_count": g["count"],
+                "covers": covers,
+                "sample_title": games[0]["title"] if games else "",
+            })
+        wall.sort(key=lambda x: -x["local_count"])
+        return {"ok": True, "makers": wall}
+
+    def refresh_new_releases(self):
+        """后台抓取所有本地厂商的新作（近 24 个月），完成后刷新 get_new_releases。"""
+        global _NEW_RELEASES
+        with _new_lock:
+            if _NEW_STATE["running"]:
+                return {"ok": True, "started": False, "running": True}
+            _NEW_STATE.update(running=True, stage="准备", done=0,
+                              total=0, error=None)
+        threading.Thread(target=self._fetch_new_releases, daemon=True).start()
+        return {"ok": True, "started": True}
+
+    def _fetch_new_releases(self):
+        from .providers import vndb
+        global _NEW_RELEASES
+        import datetime
+        cutoff = (datetime.date.today() - datetime.timedelta(days=730)).isoformat()
+        makers = [r["maker"] for r in self._db.query(
+            "SELECT DISTINCT maker FROM games WHERE maker IS NOT NULL AND maker!=''")]
+        with _new_lock:
+            _NEW_STATE.update(stage="查询厂商", total=len(makers))
+        collected = {}
+        for i, mk in enumerate(makers):
+            with _new_lock:
+                _NEW_STATE.update(stage=mk, done=i + 1)
+            try:
+                prod, err = vndb.get_producer(self._cfg, mk)
+                if not prod:
+                    continue
+                works, werr = vndb.get_producer_vns(self._cfg, prod["id"])
+                for w in works:
+                    if w.get("released") and w["released"] >= cutoff:
+                        collected[w["id"]] = w
+            except Exception:
+                pass
+            time.sleep(0.25)  # 节流
+        owned = self._owned_vndb_set()
+        lst = sorted(collected.values(), key=lambda x: x.get("released") or "", reverse=True)[:40]
+        for w in lst:
+            w["owned"] = w["id"] in owned
+            w["local_id"] = owned.get(w["id"])
+            if w["local_id"]:
+                g = self._db.query_one("SELECT title FROM games WHERE id=?", (w["local_id"],))
+                if g:
+                    w["local_title"] = g["title"]
+        with _new_lock:
+            _NEW_RELEASES = lst
+            _NEW_STATE.update(running=False, stage="完成", error=None)
+
+    def get_new_releases(self):
+        with _new_lock:
+            state = dict(_NEW_STATE)
+            items = list(_NEW_RELEASES)
+        return {"ok": True, "state": state, "releases": items}
+
+    def get_work_detail(self, vndb_id):
+        """单作品详情：VNDB 全量字段 + 本地匹配 + 中文翻译缓存。"""
+        from .providers import vndb
+        vid = (vndb_id or "").strip()
+        if not vid:
+            return {"ok": False, "error": "缺少作品 ID"}
+        cand, err = vndb.get(self._cfg, vid)
+        if err or not cand:
+            return {"ok": False, "error": err or "VNDB 无此作品"}
+        owned = self._owned_vndb_set()
+        cand["owned"] = vid in owned
+        cand["local_id"] = owned.get(vid)
+        cand["local_title"] = None
+        if cand["local_id"]:
+            g = self._db.query_one("SELECT title FROM games WHERE id=?", (cand["local_id"],))
+            if g:
+                cand["local_title"] = g["title"]
+        c = self._db.query_one(
+            "SELECT zh_title, zh_summary FROM vndb_work_cache WHERE vndb_id=?", (vid,))
+        if c:
+            cand["zh_title"] = c["zh_title"]
+            cand["zh_summary"] = c["zh_summary"]
+        return {"ok": True, "work": cand}
+
+    def translate_work_async(self, vndb_id):
+        """后台翻译作品标题+简介为中文（单槽任务，结果落 vndb_work_cache）。"""
+        vid = (vndb_id or "").strip()
+        if not vid:
+            return {"ok": False, "error": "缺少作品 ID"}
+        with _new_lock:
+            if _TRANSLATE_JOB["running"] and _TRANSLATE_JOB["vndb_id"] == vid:
+                return {"ok": True, "running": True}
+        threading.Thread(target=self._run_translate, args=(vid,), daemon=True).start()
+        return {"ok": True, "running": True}
+
+    def _run_translate(self, vid):
+        from .providers import llm, vndb
+        with _new_lock:
+            _TRANSLATE_JOB.update(running=True, vndb_id=vid, done=False, error=None)
+        try:
+            cand, err = vndb.get(self._cfg, vid)
+            if not cand:
+                raise RuntimeError(err or "无数据")
+            system = ("你是 Galgame 中文本地化翻译。把作品标题翻译成简体中文（用玩家常用译名，"
+                      "如 Summer Pockets→夏日口袋），简介翻译成通顺的简体中文，"
+                      "只输出 JSON {\"zh_title\":\"...\",\"zh_summary\":\"...\"}")
+            user = f"标题: {cand.get('title')}\n日文名: {cand.get('title_orig') or ''}\n简介:\n{(cand.get('summary') or '')[:1500]}"
+            result, terr = llm.chat_json(self._cfg, system, user, timeout=60)
+            if not result:
+                raise RuntimeError(terr or "翻译失败")
+            zh_title = (result.get("zh_title") or "").strip()[:200]
+            zh_summary = (result.get("zh_summary") or "").strip()[:3000]
+            if not zh_title and not zh_summary:
+                raise RuntimeError("翻译结果为空")
+            self._db.execute(
+                "INSERT OR REPLACE INTO vndb_work_cache (vndb_id, zh_title, zh_summary, fetched_at)"
+                " VALUES (?,?,?,?)", (vid, zh_title, zh_summary, now_iso()))
+            with _new_lock:
+                _TRANSLATE_JOB.update(done=True, error=None)
+        except Exception as e:
+            with _new_lock:
+                _TRANSLATE_JOB.update(done=True, error=str(e)[:200])
+        finally:
+            with _new_lock:
+                _TRANSLATE_JOB["running"] = False
+
+    def get_translate_status(self):
+        with _new_lock:
+            return dict(_TRANSLATE_JOB)
 
     # ---------- AI 管家对话 ----------
     def chat_send(self, message, context_game_id=None):

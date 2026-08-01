@@ -16,8 +16,11 @@ export const useLibraryStore = defineStore('library', {
     facets: { tags: [], makers: [], years: [] },
     missingPaths: [],
     chat: { messages: [], sending: false, contextGame: null },
-    currentView: 'library', // library | detail | pending | stats | settings | chat | maker
+    currentView: 'library', // library | detail | pending | stats | settings | chat | maker | makers
     maker: { mode: 'maker', key: null, profile: null, loading: false, error: null },
+    makers: { list: [], loading: false },
+    newReleases: { items: [], loading: false, running: false, done: 0, total: 0, stage: '' },
+    workDetail: { vndbId: null, work: null, loading: false, error: null, translating: false, translateError: null },
     selectedGameId: null,
     detail: null,
     detailLoading: false,
@@ -250,6 +253,88 @@ export const useLibraryStore = defineStore('library', {
     openSeries(vndbId) {
       this.currentView = 'maker'
       this.loadSeriesProfile(vndbId)
+    },
+
+    // ---- 厂商墙 / 新作 / 作品详情 ----
+    async loadMakersWall() {
+      this.makers.loading = true
+      const r = await api.getMakersWall()
+      this.makers.loading = false
+      if (r && r.ok) this.makers.list = r.makers || []
+    },
+
+    async refreshNewReleases() {
+      if (this.newReleases.running) return
+      const r = await api.refreshNewReleases()
+      if (r && r.ok) this.pollNewReleases()
+    },
+
+    async pollNewReleases() {
+      const r = await api.getNewReleases()
+      if (!r || !r.ok) return
+      const st = r.state || {}
+      this.newReleases.running = !!st.running
+      this.newReleases.done = st.done || 0
+      this.newReleases.total = st.total || 0
+      this.newReleases.stage = st.stage || ''
+      this.newReleases.items = r.releases || this.newReleases.items
+      this.newReleases.loading = false
+      if (st.running) {
+        setTimeout(() => this.pollNewReleases(), 1500)
+      }
+    },
+
+    async loadNewReleases() {
+      this.newReleases.loading = true
+      await this.pollNewReleases()
+    },
+
+    async openWorkDetail(vndbId) {
+      if (!vndbId) return
+      this.workDetail = { vndbId, work: null, loading: true, error: null, translating: false, translateError: null }
+      const r = await api.getWorkDetail(vndbId)
+      if (r && r.ok) {
+        this.workDetail.work = r.work
+        this.workDetail.loading = false
+        // 无中文 → 自动触发翻译
+        if (!r.work.zh_title && !r.work.zh_summary) {
+          this.triggerTranslate(vndbId)
+        }
+      } else {
+        this.workDetail.error = (r && r.error) || '加载失败'
+        this.workDetail.loading = false
+      }
+    },
+
+    async triggerTranslate(vndbId) {
+      if (this.workDetail.translating) return
+      this.workDetail.translating = true
+      this.workDetail.translateError = null
+      await api.translateWorkAsync(vndbId)
+      const deadline = Date.now() + 120000
+      const poll = async () => {
+        const st = await api.getTranslateStatus()
+        if (st && st.done) {
+          this.workDetail.translating = false
+          if (st.error) {
+            this.workDetail.translateError = st.error
+          } else {
+            const r = await api.getWorkDetail(vndbId)
+            if (r && r.ok) this.workDetail.work = r.work
+          }
+          return
+        }
+        if (Date.now() < deadline) setTimeout(poll, 2000)
+        else {
+          this.workDetail.translating = false
+          this.workDetail.translateError = '翻译超时，可稍后重试'
+        }
+      }
+      setTimeout(poll, 1500)
+    },
+
+    closeWorkDetail() {
+      this.workDetail = { vndbId: null, work: null, loading: false, error: null, translating: false, translateError: null }
     },
   },
 })

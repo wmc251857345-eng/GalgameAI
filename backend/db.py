@@ -75,6 +75,11 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     role TEXT, content TEXT, created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS vndb_work_cache (
+    vndb_id TEXT PRIMARY KEY,
+    zh_title TEXT, zh_summary TEXT,
+    fetched_at TEXT
+);
 """
 
 

@@ -167,6 +167,18 @@ if mr.get("ok"):
         check("series profile", sr.get("ok") and sr.get("total_count", 0) >= 1,
               (sr.get("error") or f"{sr.get('total_count')} 部")[:60])
 
+# ---------- 9. 厂商墙 / 新作 / 作品详情 ----------
+mw = js.get_makers_wall()
+check("makers wall", mw.get("ok") and len(mw.get("makers", [])) > 0,
+      f"{len(mw.get('makers', []))} 家")
+wd = js.get_work_detail("v20424")
+check("work detail", wd.get("ok") and wd["work"].get("title") == "Summer Pockets",
+      (wd.get("error") or wd["work"].get("title"))[:60])
+nr0 = js.refresh_new_releases()
+check("new releases start", nr0.get("ok"), nr0)
+nrs = js.get_new_releases()
+check("new releases state shape", "state" in nrs and "releases" in nrs, "ok")
+
 dbx.close()
 os.remove(tmp)
 

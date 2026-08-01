@@ -5,7 +5,9 @@
       <h1 v-else>🧩 {{ profileTitle }}</h1>
       <span class="count">{{ headerNote }}</span>
       <div class="head-actions">
-        <button class="btn small" @click="store.currentView = 'library'">← 返回库</button>
+        <button class="btn small" :disabled="!prevMaker" @click="goMaker(prevMaker)" title="上一个厂商">‹ 上一个</button>
+        <button class="btn small" :disabled="!nextMaker" @click="goMaker(nextMaker)" title="下一个厂商">下一个 ›</button>
+        <button class="btn small" @click="store.currentView = 'makers'">🏭 厂商墙</button>
       </div>
     </div>
 
@@ -118,9 +120,25 @@ function openWork(w) {
   if (w.local_id) {
     store.openGame(w.local_id)
   } else if (w.id) {
-    // 未拥有：弹出小提示即可（不跳转）
-    alert(`《${w.title}》（${w.released || '日期未知'}）\n本地库中没有这个游戏。\n可点击作品上的 🔗 系列链接查看它的前作/续作。`)
+    store.openWorkDetail(w.id)
   }
+}
+
+// 厂商墙导航（按墙内顺序找上/下一个）
+const makerIndex = computed(() => {
+  const key = store.maker.key
+  return store.makers.list.findIndex((m) => m.maker === key)
+})
+const prevMaker = computed(() => {
+  const i = makerIndex.value
+  return i > 0 ? store.makers.list[i - 1].maker : null
+})
+const nextMaker = computed(() => {
+  const i = makerIndex.value
+  return i >= 0 && i < store.makers.list.length - 1 ? store.makers.list[i + 1].maker : null
+})
+function goMaker(name) {
+  if (name) store.openMaker(name)
 }
 
 function retry() {

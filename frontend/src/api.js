@@ -364,4 +364,40 @@ export const api = {
     await delay(800)
     return { ok: false, error: '(mock) 无系列数据' }
   },
+
+  // 厂商墙 / 新作 / 作品详情
+  async getMakersWall() {
+    if (hasBridge()) return window.pywebview.api.get_makers_wall()
+    await delay()
+    return { ok: true, makers: [] }
+  },
+
+  async refreshNewReleases() {
+    if (hasBridge()) return window.pywebview.api.refresh_new_releases()
+    return { ok: true, started: true }
+  },
+
+  async getNewReleases() {
+    if (hasBridge()) return window.pywebview.api.get_new_releases()
+    await delay()
+    return { ok: true, state: { running: false }, releases: [] }
+  },
+
+  async getWorkDetail(vndbId) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.get_work_detail(vndbId), 45000, '作品详情')
+    }
+    await delay()
+    return { ok: false, error: '(mock) 无数据' }
+  },
+
+  async translateWorkAsync(vndbId) {
+    if (hasBridge()) return window.pywebview.api.translate_work_async(vndbId)
+    return { ok: true }
+  },
+
+  async getTranslateStatus() {
+    if (hasBridge()) return window.pywebview.api.get_translate_status()
+    return { running: false, done: false }
+  },
 }
