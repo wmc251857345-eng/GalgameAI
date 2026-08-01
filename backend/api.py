@@ -993,8 +993,11 @@ class JsApi:
 
     def _run_tag_translate(self):
         from .providers import llm
+        # 核心防御：pending 必须单调递减（尝试过的标签无论成败都移出，失败的限 2 次重试），
+        # 轮数上限 + 节流——避免 LLM 持续失败时无限空转死循环打爆 API / 卡死 UI
+        attempts = {}
         try:
-            while True:
+            for _round in range(12):
                 with _new_lock:
                     pending = list(_TAG_JOB.get("pending", []))
                 if not pending:
@@ -1012,19 +1015,36 @@ class JsApi:
                         zh = (item.get("zh") or "").strip()
                         if en and zh:
                             rows.append((en, zh))
+                ok_en = {r[0] for r in rows}
+                if rows:
+                    with _new_lock:
+                        for en, zh in rows:
+                            self._db.execute(
+                                "INSERT OR REPLACE INTO tag_cache (en_name, zh_name) VALUES (?,?)",
+                                (en, zh))
+                        _TAG_JOB["done"] += len(rows)
+                # 尝试过的移出 pending；失败的（LLM 没返回对应 en）最多再试 2 次
+                still_missing = []
+                for t in batch:
+                    if t in ok_en:
+                        continue
+                    attempts[t] = attempts.get(t, 0) + 1
+                    if attempts[t] < 2:
+                        still_missing.append(t)
                 with _new_lock:
-                    for en, zh in rows:
-                        self._db.execute(
-                            "INSERT OR REPLACE INTO tag_cache (en_name, zh_name) VALUES (?,?)",
-                            (en, zh))
-                    _TAG_JOB["pending"] = [t for t in pending if t not in {r[0] for r in rows}]
-                    _TAG_JOB["done"] += len(rows)
+                    cur = set(_TAG_JOB.get("pending", []))
+                    cur.difference_update(batch)
+                    cur.update(still_missing)
+                    _TAG_JOB["pending"] = sorted(cur)
+                if not rows:
+                    time.sleep(2)  # LLM 失败时放慢节奏，避免空转
         except Exception as e:
             with _new_lock:
                 _TAG_JOB["error"] = str(e)[:200]
         finally:
             with _new_lock:
                 _TAG_JOB["running"] = False
+                _TAG_JOB["pending"] = []
 
     def get_tag_translate_status(self):
         with _new_lock:
