@@ -130,6 +130,32 @@ check("test bgm", t.get("bgm", {}).get("ok") is True, t.get("bgm"))
 check("test vndb", t.get("vndb", {}).get("ok") is True, t.get("vndb"))
 check("test llm", t.get("llm", {}).get("ok") is True, str(t.get("llm"))[:80])
 
+# ---------- 7. AI 管家对话冒烟（真实 LLM + 工具循环 + 历史落盘） ----------
+r = js.chat_send("你好，简单介绍一下你自己")
+check("chat_send replies", r.get("ok") and len(r.get("reply") or "") > 10,
+      (r.get("reply") or "")[:60])
+hist = js.chat_history()
+check("chat history persisted", len(hist) >= 2 and hist[-1]["role"] == "assistant",
+      f"{len(hist)} 条")
+js.chat_clear()
+check("chat_clear", len(js.chat_history()) == 0)
+
+# 多提供商池：活动指向坏地址时自动故障转移到池内其他提供商
+cfg_data = {"provider": {"name": "bad", "model": "x", "api_key": "bad",
+                         "base_url": "http://127.0.0.1:1/v1"},
+            "providers": [p for p in (cfg.get("providers") or []) if p.get("enabled")],
+            "proxy": cfg.get("proxy", {})}
+import json as _json
+_tmpcfg = os.path.join(tempfile.gettempdir(), "gala_cfg_verify.json")
+with open(_tmpcfg, "w", encoding="utf-8") as _f:
+    _json.dump(cfg_data, _f, ensure_ascii=False)
+from backend.config import Config as _Cfg
+from backend.providers import llm as _llm
+_c = _Cfg(path=_tmpcfg)
+_r, _e = _llm.chat(_c, [{"role": "user", "content": "只回复: pong"}], json_mode=False, timeout=20)
+check("provider failover", _r is not None, str(_e)[:60] if _e else "ok")
+os.remove(_tmpcfg)
+
 dbx.close()
 os.remove(tmp)
 

@@ -15,7 +15,8 @@ export const useLibraryStore = defineStore('library', {
     viewMode: 'grid',      // grid | list
     facets: { tags: [], makers: [], years: [] },
     missingPaths: [],
-    currentView: 'library', // library | detail | pending | stats | settings
+    chat: { messages: [], sending: false, contextGame: null },
+    currentView: 'library', // library | detail | pending | stats | settings | chat
     selectedGameId: null,
     detail: null,
     detailLoading: false,
@@ -188,6 +189,39 @@ export const useLibraryStore = defineStore('library', {
 
     async refreshRunning() {
       this.runningGames = await api.getRunning()
+    },
+
+    // ---- AI 管家 ----
+    async chatLoad() {
+      this.chat.messages = await api.chatHistory()
+    },
+
+    async chatSend(text) {
+      if (!text.trim() || this.chat.sending) return
+      this.chat.sending = true
+      this.chat.messages.push({ role: 'user', content: text, created_at: new Date().toISOString() })
+      try {
+        const r = await api.chatSend(text, this.chat.contextGame?.id)
+        this.chat.messages.push({
+          role: 'assistant',
+          content: r?.ok ? r.reply : (r?.error || '发送失败'),
+          actions: (r && r.actions) || [],
+          created_at: new Date().toISOString(),
+        })
+      } catch (e) {
+        this.chat.messages.push({ role: 'assistant', content: e.message || '请求失败', actions: [] })
+      } finally {
+        this.chat.sending = false
+      }
+    },
+
+    async chatClear() {
+      await api.chatClear()
+      this.chat.messages = []
+    },
+
+    setChatContext(g) {
+      this.chat.contextGame = g || null
     },
   },
 })

@@ -11,15 +11,10 @@
       <!-- AI 服务 -->
       <section class="card">
         <h2>AI 服务</h2>
+        <h3 class="card-sub">当前提供商（优先使用，失败/限速自动切换）</h3>
         <div class="row">
-          <label>提供商</label>
-          <select v-model="cfg.provider.name">
-            <option>custom</option>
-            <option>gemini</option>
-            <option>openai</option>
-            <option>claude</option>
-            <option>deepseek</option>
-          </select>
+          <label>名称</label>
+          <input v-model="cfg.provider.name" placeholder="如 catiecli / ggchan" />
         </div>
         <div class="row">
           <label>模型</label>
@@ -43,7 +38,33 @@
           <input v-model="cfg.provider.search" type="checkbox" />
           <span class="hint">预留开关：AI 自带搜索能力</span>
         </div>
-        <div class="row">
+
+        <h3 class="card-sub" style="margin-top: 16px">提供商池（轮询：当前失败/限速 → 自动切下一个）</h3>
+        <div v-if="providerPool.length" class="prov-list">
+          <div v-for="(p, i) in providerPool" :key="p.name + '_' + i" class="prov-row">
+            <input v-model="p.name" class="prov-in prov-name" placeholder="名称" :title="p.name === cfg.provider.name ? '当前活动' : ''" />
+            <input v-model="p.model" class="prov-in prov-model" placeholder="模型" />
+            <input v-model="p.base_url" class="prov-in prov-url" placeholder="Base URL" />
+            <input v-model="p.api_key" type="password" class="prov-in prov-key" placeholder="API Key" />
+            <label class="prov-enable" title="启用后才参与轮询">
+              <input type="checkbox" v-model="p.enabled" />启用
+            </label>
+            <button class="btn small" :disabled="p.name === cfg.provider.name" @click="setActive(p)">设为当前</button>
+            <button class="btn small" :disabled="testing" @click="testProv(p)">测试</button>
+            <button class="btn small danger-soft" @click="removeProv(i)">删除</button>
+          </div>
+        </div>
+        <div v-else class="dim" style="margin: 6px 0">暂无池内提供商，可添加（当前提供商会在保存时自动入池）</div>
+        <div class="row" style="margin-top: 8px">
+          <button class="btn small" @click="addProv">➕ 添加提供商</button>
+          <span v-if="provTest" class="conn-result">
+            <span v-for="(v, k) in provTest" :key="k" class="conn-item"
+                  :class="v.ok === true ? 'ok' : v.ok === false ? 'fail' : 'skip'">
+              {{ k }}: {{ v.ok === true ? '✓ ' + v.ms + 'ms' : (v.ok === false ? '✗ ' + (v.error || '') : (v.note || '未测试')) }}
+            </span>
+          </span>
+        </div>
+        <div class="row" style="margin-top: 12px">
           <label>VNDB Token</label>
           <input v-model="cfg.vndb_token" type="password" placeholder="可选，填了才有 VNDB 数据（时长/评分）" />
         </div>
@@ -176,7 +197,14 @@ const newRoot = ref('')
 const taskMsg = ref('')
 const testing = ref(false)
 const connResult = ref(null)
+const provTest = ref(null)
 const connLabel = { bgm: 'Bangumi', vndb: 'VNDB', llm: 'AI' }
+
+const providerPool = computed(() => {
+  if (!cfg.value) return []
+  const pool = cfg.value.providers || []
+  return pool.length ? pool : [cfg.value.provider]
+})
 
 const connClass = (v) => (v.ok === true ? 'ok' : v.ok === false ? 'fail' : 'skip')
 const connText = (v) => {
@@ -284,10 +312,47 @@ async function runTest() {
   }
 }
 
+// ---- 提供商池 ----
+async function setActive(p) {
+  const r = await api.setActiveProvider(p.name)
+  if (r && r.ok && r.provider) {
+    cfg.value.provider = r.provider
+    saved.value = true
+    setTimeout(() => (saved.value = false), 1500)
+  } else {
+    alert(r?.error || '切换失败')
+  }
+}
+
+async function testProv(p) {
+  testing.value = true
+  try {
+    const r = await api.testProvider({ ...p })
+    provTest.value = { [p.name || 'provider']: r }
+  } finally {
+    testing.value = false
+  }
+}
+
+function removeProv(i) {
+  cfg.value.providers.splice(i, 1)
+  provTest.value = null
+}
+
+function addProv() {
+  if (!cfg.value.providers) cfg.value.providers = []
+  cfg.value.providers.push({
+    name: `新提供商${cfg.value.providers.length + 1}`,
+    model: '', api_key: '', base_url: '',
+    vision: false, search: false, enabled: true,
+  })
+}
+
 async function save() {
   saving.value = true
   try {
     await api.setConfig('provider', cfg.value.provider)
+    await api.setConfig('providers', cfg.value.providers || [])
     await api.setConfig('proxy', cfg.value.proxy)
     await api.setConfig('analysis', cfg.value.analysis)
     await api.setConfig('backup', cfg.value.backup)

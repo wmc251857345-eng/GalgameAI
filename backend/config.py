@@ -14,6 +14,7 @@ DEFAULTS = {
         "vision": False,
         "search": False,
     },
+    "providers": [],  # 提供商池（多 AI 轮询）：[{name, model, api_key, base_url, enabled, vision, search}]
     "proxy": {"enabled": False, "url": "http://127.0.0.1:7897"},
     "vndb_token": "",
     "library_roots": [],

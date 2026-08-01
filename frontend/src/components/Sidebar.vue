@@ -41,6 +41,7 @@ const appInfo = ref({ version: '0.1.0', platform: '' })
 
 const items = [
   { id: 'library', icon: '▤', label: '游戏库' },
+  { id: 'chat', icon: '💬', label: 'AI 管家' },
   { id: 'pending', icon: '◷', label: '待确认' },
   { id: 'stats', icon: '◔', label: '统计' },
   { id: 'settings', icon: '⚙', label: '设置' },

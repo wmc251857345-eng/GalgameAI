@@ -66,6 +66,7 @@
               <button class="btn" :disabled="reanalyzing" @click="reanalyze">
                 {{ reanalyzing ? '⟳ 分析中…' : '⟳ 重新 AI 分析' }}
               </button>
+              <button class="btn" @click="askButler">💬 问管家</button>
               <button class="btn" @click="startEdit">✏ 编辑</button>
               <label class="le-toggle">
                 <input :checked="!!g.use_locale_emu" type="checkbox" @change="toggleLe" />
@@ -287,6 +288,11 @@ async function useCandCover(url) {
 async function toggleFav() {
   await store.toggleFavorite(g.value)
   store.load()
+}
+
+function askButler() {
+  store.setChatContext(g.value)
+  store.currentView = 'chat'
 }
 
 async function relocate() {

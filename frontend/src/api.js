@@ -314,4 +314,37 @@ export const api = {
     if (hasBridge()) return window.pywebview.api.cancel_task()
     return { ok: true }
   },
+
+  // 多提供商
+  async setActiveProvider(name) {
+    if (hasBridge()) return window.pywebview.api.set_active_provider(name)
+    await delay()
+    return { ok: true }
+  },
+
+  async testProvider(provider) {
+    if (hasBridge()) return window.pywebview.api.test_provider(provider)
+    await delay(800)
+    return { ok: true, ms: 300 }
+  },
+
+  // AI 管家对话
+  async chatSend(message, contextGameId) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.chat_send(message, contextGameId), 180000, '管家回复')
+    }
+    await delay(1500)
+    return { ok: true, reply: '(mock) 管家回复', actions: [] }
+  },
+
+  async chatHistory() {
+    if (hasBridge()) return window.pywebview.api.chat_history()
+    await delay()
+    return []
+  },
+
+  async chatClear() {
+    if (hasBridge()) return window.pywebview.api.chat_clear()
+    return { ok: true }
+  },
 }

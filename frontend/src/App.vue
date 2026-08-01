@@ -10,6 +10,7 @@
       <div class="content">
         <LibraryView v-if="store.currentView === 'library'" />
         <DetailView v-else-if="store.currentView === 'detail'" />
+        <ChatView v-else-if="store.currentView === 'chat'" />
         <PendingView v-else-if="store.currentView === 'pending'" />
         <StatsView v-else-if="store.currentView === 'stats'" />
         <SettingsView v-else />
@@ -26,6 +27,7 @@ import Sidebar from './components/Sidebar.vue'
 import TopBar from './components/TopBar.vue'
 import LibraryView from './views/LibraryView.vue'
 import DetailView from './views/DetailView.vue'
+import ChatView from './views/ChatView.vue'
 import PendingView from './views/PendingView.vue'
 import StatsView from './views/StatsView.vue'
 import SettingsView from './views/SettingsView.vue'

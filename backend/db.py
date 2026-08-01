@@ -70,6 +70,11 @@ CREATE TABLE IF NOT EXISTS match_candidates (
     PRIMARY KEY (game_id, provider, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_candidates_game ON match_candidates(game_id);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT, content TEXT, created_at TEXT
+);
 """
 
 

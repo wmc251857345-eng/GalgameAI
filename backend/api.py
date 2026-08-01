@@ -133,6 +133,7 @@ class JsApi:
     def __init__(self, db, config):
         self._db = db
         self._cfg = config
+        self._agent = None
 
     # ---------- 基础 ----------
     def ping(self):
@@ -614,6 +615,70 @@ class JsApi:
         ts = time.strftime("%Y%m%d_%H%M%S")
         out = _do_backup(self._db, os.path.join(paths.BASE, "database", "backup", ts))
         return {"ok": True, "path": out}
+
+    # ---------- 多提供商管理 ----------
+    def list_providers(self):
+        return {"active": self._cfg.get("provider", {}),
+                "providers": self._cfg.get("providers", [])}
+
+    def set_active_provider(self, name):
+        """把池中的某个提供商设为当前活动提供商（后续调用优先用它）。"""
+        provs = self._cfg.get("providers", [])
+        p = next((x for x in provs if x.get("name") == name), None)
+        if not p:
+            return {"ok": False, "error": "提供商不存在"}
+        active = {
+            "name": p.get("name", ""), "model": p.get("model", ""),
+            "api_key": p.get("api_key", ""), "base_url": p.get("base_url", ""),
+            "vision": bool(p.get("vision")), "search": bool(p.get("search")),
+        }
+        self._cfg.set("provider", active)
+        return {"ok": True, "provider": active}
+
+    def test_provider(self, provider):
+        """测试单个提供商连通性（直接请求，不修改配置）。"""
+        from .providers import llm
+        import time as _t
+        t0 = _t.time()
+        try:
+            resp, err = llm.chat_provider(
+                provider, [{"role": "user", "content": "只回复: pong"}],
+                json_mode=False, timeout=25, cfg=self._cfg)
+            return {"ok": resp is not None, "ms": int((_t.time() - t0) * 1000),
+                    "error": str(err) if err else None}
+        except Exception as e:
+            return {"ok": False, "ms": int((_t.time() - t0) * 1000), "error": str(e)}
+
+    # ---------- AI 管家对话 ----------
+    def chat_send(self, message, context_game_id=None):
+        """发送一条消息给 AI 管家（工具调用式），返回回复+动作记录。"""
+        message = (message or "").strip()
+        if not message:
+            return {"ok": False, "error": "消息为空"}
+        if self._agent is None:
+            from .agent import AgentService
+            self._agent = AgentService(self._db, self._cfg)
+        self._db.execute(
+            "INSERT INTO chat_messages (role, content, created_at) VALUES ('user',?,?)",
+            (message, now_iso()))
+        history = [{"role": r["role"], "content": r["content"]} for r in self._db.query(
+            "SELECT role, content FROM chat_messages ORDER BY id DESC LIMIT 12")][::-1]
+        result = self._agent.chat(message, context_game_id=context_game_id, history=history)
+        reply = (result.get("reply") or "").strip()
+        self._db.execute(
+            "INSERT INTO chat_messages (role, content, created_at) VALUES ('assistant',?,?)",
+            (reply or "(空回复)", now_iso()))
+        return {"ok": True, "reply": reply, "actions": result.get("actions", [])}
+
+    def chat_history(self, limit=30):
+        rows = self._db.query(
+            "SELECT role, content, created_at FROM chat_messages ORDER BY id DESC LIMIT ?",
+            (int(limit),))
+        return list(reversed(rows))
+
+    def chat_clear(self):
+        self._db.execute("DELETE FROM chat_messages")
+        return {"ok": True}
 
     # ---------- 启动 / 时长 ----------
     def launch_game(self, game_id):
