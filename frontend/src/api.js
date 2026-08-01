@@ -347,4 +347,21 @@ export const api = {
     if (hasBridge()) return window.pywebview.api.chat_clear()
     return { ok: true }
   },
+
+  // 厂商/系列追踪
+  async getMakerProfile(maker) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.get_maker_profile(maker), 60000, '厂商档案')
+    }
+    await delay(800)
+    return { ok: false, error: '(mock) 无厂商数据' }
+  },
+
+  async getSeriesProfile(vndbId) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.get_series_profile(vndbId), 60000, '系列档案')
+    }
+    await delay(800)
+    return { ok: false, error: '(mock) 无系列数据' }
+  },
 }

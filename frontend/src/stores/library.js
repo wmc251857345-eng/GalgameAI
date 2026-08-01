@@ -16,7 +16,8 @@ export const useLibraryStore = defineStore('library', {
     facets: { tags: [], makers: [], years: [] },
     missingPaths: [],
     chat: { messages: [], sending: false, contextGame: null },
-    currentView: 'library', // library | detail | pending | stats | settings | chat
+    currentView: 'library', // library | detail | pending | stats | settings | chat | maker
+    maker: { mode: 'maker', key: null, profile: null, loading: false, error: null },
     selectedGameId: null,
     detail: null,
     detailLoading: false,
@@ -222,6 +223,33 @@ export const useLibraryStore = defineStore('library', {
 
     setChatContext(g) {
       this.chat.contextGame = g || null
+    },
+
+    // ---- 厂商 / 系列追踪 ----
+    async loadMakerProfile(maker) {
+      this.maker = { mode: 'maker', key: maker, profile: null, loading: true, error: null }
+      const r = await api.getMakerProfile(maker)
+      this.maker.loading = false
+      if (r && r.ok) this.maker.profile = r
+      else this.maker.error = (r && r.error) || '加载失败'
+    },
+
+    async loadSeriesProfile(vndbId) {
+      this.maker = { mode: 'series', key: vndbId, profile: null, loading: true, error: null }
+      const r = await api.getSeriesProfile(vndbId)
+      this.maker.loading = false
+      if (r && r.ok) this.maker.profile = r
+      else this.maker.error = (r && r.error) || '加载失败'
+    },
+
+    openMaker(maker) {
+      this.currentView = 'maker'
+      this.loadMakerProfile(maker)
+    },
+
+    openSeries(vndbId) {
+      this.currentView = 'maker'
+      this.loadSeriesProfile(vndbId)
     },
   },
 })

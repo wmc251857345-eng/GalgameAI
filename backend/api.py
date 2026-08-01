@@ -88,7 +88,7 @@ def _rating_disp(r):
     return r
 
 
-# exe 存在性 TTL 缓存：避免每次列库都对 HDD 反复 stat（大库/机械盘会卡）
+# exe 存在性 TTL 缓存：避免每次列库都对 HDD 反复 stat
 _exe_cache = {}
 _EXE_TTL = 30
 
@@ -129,12 +129,16 @@ def _game_row(g, db, with_extra=False):
     return row
 
 
+# 厂商/系列档案 TTL 缓存（1 小时）
+_maker_cache = {}
+_series_cache = {}
+
+
 class JsApi:
     def __init__(self, db, config):
         self._db = db
         self._cfg = config
         self._agent = None
-
     # ---------- 基础 ----------
     def ping(self):
         return "pong"
@@ -648,6 +652,72 @@ class JsApi:
                     "error": str(err) if err else None}
         except Exception as e:
             return {"ok": False, "ms": int((_t.time() - t0) * 1000), "error": str(e)}
+
+    # ---------- 厂商 / 系列追踪 ----------
+    def _owned_vndb_set(self):
+        return {r["vndb_id"]: r["id"] for r in self._db.query(
+            "SELECT vndb_id, id FROM games WHERE vndb_id IS NOT NULL AND vndb_id!=''")}
+
+    def _mark_owned(self, works):
+        """给作品打 owned 标记 + 本地游戏 id 映射（点封面可跳回本地详情）。"""
+        idmap = self._owned_vndb_set()
+        for w in works:
+            w["owned"] = w["id"] in idmap
+            w["local_id"] = idmap.get(w["id"])
+
+    def get_maker_profile(self, maker):
+        """厂商档案：介绍 + 全部作品（含已拥有标记）+ 系列归类。1 小时 TTL 缓存。"""
+        from .providers import vndb
+        import time as _t
+        key = (maker or "").strip()
+        if not key:
+            return {"ok": False, "error": "厂商名为空"}
+        now = _t.time()
+        hit = _maker_cache.get(key)
+        if hit and now - hit[0] < 3600:
+            return hit[1]
+        prod, err = vndb.get_producer(self._cfg, key)
+        if err:
+            return {"ok": False, "error": err}
+        if not prod:
+            return {"ok": False, "error": f"VNDB 没找到厂商「{key}」"}
+        works, werr = vndb.get_producer_vns(self._cfg, prod["id"])
+        if werr:
+            return {"ok": False, "error": werr}
+        owned = self._owned_vndb_set()
+        for w in works:
+            w["owned"] = w["id"] in owned
+            w["local_id"] = owned.get(w["id"])
+        result = {"ok": True, "producer": prod, "works": works,
+                  "owned_count": sum(1 for w in works if w["owned"]),
+                  "total_count": len(works)}
+        _maker_cache[key] = (now, result)
+        return result
+
+    def get_series_profile(self, series_id):
+        """系列档案：以锚点 VN 收集同系列（relation='ser'）全部作品，含已拥有标记。"""
+        from .providers import vndb
+        import time as _t
+        sid = (series_id or "").strip()
+        if not sid:
+            return {"ok": False, "error": "系列 ID 为空"}
+        now = _t.time()
+        hit = _series_cache.get(sid)
+        if hit and now - hit[0] < 3600:
+            return hit[1]
+        works, name, werr = vndb.get_series(self._cfg, sid)
+        if werr:
+            return {"ok": False, "error": werr}
+        owned = self._owned_vndb_set()
+        for w in works:
+            w["owned"] = w["id"] in owned
+            w["local_id"] = owned.get(w["id"])
+        result = {"ok": True, "series": {"id": sid, "name": name},
+                  "works": works,
+                  "owned_count": sum(1 for w in works if w["owned"]),
+                  "total_count": len(works)}
+        _series_cache[sid] = (now, result)
+        return result
 
     # ---------- AI 管家对话 ----------
     def chat_send(self, message, context_game_id=None):

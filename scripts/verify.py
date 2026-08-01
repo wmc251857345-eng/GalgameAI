@@ -156,6 +156,17 @@ _r, _e = _llm.chat(_c, [{"role": "user", "content": "只回复: pong"}], json_mo
 check("provider failover", _r is not None, str(_e)[:60] if _e else "ok")
 os.remove(_tmpcfg)
 
+# ---------- 8. 厂商 / 系列追踪 ----------
+mr = js.get_maker_profile("Yuzusoft")
+check("maker profile", mr.get("ok") and mr.get("total_count", 0) > 0,
+      (mr.get("error") or f"{mr.get('total_count')} 部作品")[:60])
+if mr.get("ok"):
+    vids = [w["id"] for w in mr["works"] if w.get("relations")]
+    if vids:
+        sr = js.get_series_profile(vids[0])
+        check("series profile", sr.get("ok") and sr.get("total_count", 0) >= 1,
+              (sr.get("error") or f"{sr.get('total_count')} 部")[:60])
+
 dbx.close()
 os.remove(tmp)
 

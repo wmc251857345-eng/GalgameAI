@@ -444,3 +444,60 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .chat-input-row .btn { margin-top: 0; border-radius: 20px; padding: 10px 24px; }
 .dots::after { content: '…'; animation: dots 1.2s steps(4) infinite; }
 @keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+
+/* ---------- 厂商 / 系列页 ---------- */
+.mk-link { color: var(--accent); cursor: pointer; }
+.mk-link:hover { text-decoration: underline; }
+.maker-error { padding: 30px 0; text-align: center; color: var(--text-dim); }
+.maker-error .btn.small { margin-top: 10px; }
+.maker-intro {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 18px; margin-bottom: 16px;
+}
+.maker-badges { display: flex; gap: 8px; margin-bottom: 8px; }
+.mk-badge {
+  font-size: 11px; padding: 2px 10px; border-radius: 10px;
+  background: var(--bg-deep); color: var(--text-dim); border: 1px solid var(--border);
+}
+.maker-desc { font-size: 12.5px; line-height: 1.8; color: var(--text); margin: 0; }
+.mk-works-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 12px;
+}
+.mk-owned { font-size: 12px; color: var(--text-dim); font-weight: 400; }
+.mk-owned b { color: var(--green); font-weight: 700; }
+.mk-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 14px;
+}
+.mk-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; cursor: pointer; transition: transform 0.15s, border-color 0.15s;
+}
+.mk-card:hover { transform: translateY(-3px); border-color: var(--accent); }
+.mk-card.owned { border-color: rgba(164, 208, 7, 0.45); }
+.mk-cover-wrap { position: relative; aspect-ratio: 3 / 4; background: var(--bg-deep); }
+.mk-cover { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mk-cover-empty {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 30px; color: var(--text-dim);
+}
+.mk-owned-badge, .mk-notowned-badge {
+  position: absolute; top: 6px; right: 6px; font-size: 10.5px;
+  padding: 2px 8px; border-radius: 10px; backdrop-filter: blur(2px);
+}
+.mk-owned-badge { background: rgba(164, 208, 7, 0.9); color: #101319; font-weight: 700; }
+.mk-notowned-badge { background: rgba(0, 0, 0, 0.55); color: #cbd2d8; }
+.mk-info { padding: 8px 10px 10px; }
+.mk-title {
+  font-size: 12.5px; color: var(--text-bright); font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mk-meta { display: flex; gap: 8px; font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+.mk-series-chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+.mk-series-chip {
+  font-size: 10.5px; padding: 1px 8px; border-radius: 9px; cursor: pointer;
+  background: rgba(102, 192, 244, 0.1); color: var(--accent); border: 1px solid rgba(102, 192, 244, 0.3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px;
+}
+.mk-series-chip:hover { background: rgba(102, 192, 244, 0.22); }

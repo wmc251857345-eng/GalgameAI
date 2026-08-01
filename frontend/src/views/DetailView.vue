@@ -27,7 +27,15 @@
             <tr><td>中文名</td><td>{{ g.title_zh || '—' }}</td></tr>
             <tr><td>日文名</td><td>{{ g.title_jp || '—' }}</td></tr>
             <tr><td>英文名</td><td>{{ g.title_en || '—' }}</td></tr>
-            <tr><td>制作</td><td>{{ g.maker || '—' }}</td></tr>
+            <tr><td>制作</td><td>
+              <span
+                v-if="g.maker"
+                class="mk-link"
+                title="查看该厂商的全部作品"
+                @click="store.openMaker(g.maker.split(' / ')[0].trim())"
+              >{{ g.maker }}</span>
+              <span v-else>—</span>
+            </td></tr>
             <tr><td>发售</td><td>{{ g.released || '—' }}</td></tr>
             <tr><td>评分</td><td>{{ g.rating_disp != null ? '★ ' + g.rating_disp : '—' }}</td></tr>
             <tr><td>时长</td><td>{{ lengthText }}</td></tr>
@@ -67,6 +75,7 @@
                 {{ reanalyzing ? '⟳ 分析中…' : '⟳ 重新 AI 分析' }}
               </button>
               <button class="btn" @click="askButler">💬 问管家</button>
+              <button v-if="g.vndb_id" class="btn" @click="store.openSeries(g.vndb_id)">🧩 系列/前作</button>
               <button class="btn" @click="startEdit">✏ 编辑</button>
               <label class="le-toggle">
                 <input :checked="!!g.use_locale_emu" type="checkbox" @change="toggleLe" />
