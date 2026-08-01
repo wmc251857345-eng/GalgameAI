@@ -117,6 +117,8 @@ def _producer_keywords(name):
 
 def _producer_search(cfg, keyword):
     """单关键词搜 producer，返回最佳匹配（名称/别名精确匹配优先）。"""
+    import time
+    time.sleep(0.12)  # 节流：关键词展开可能连续多次请求，防 VNDB 限速
     token = cfg.get("vndb_token", "")
     if not token:
         return None, "未配置 VNDB token"

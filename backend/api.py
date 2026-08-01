@@ -144,6 +144,9 @@ _TRANSLATE_JOB = {"running": False, "vndb_id": None, "done": False, "error": Non
 # 标签批量翻译任务（单槽）
 _TAG_JOB = {"running": False, "pending": [], "done": 0, "error": None}
 
+# 作品标题批量翻译任务（单槽）：{vndb_id: {title, title_jp}}
+_WORK_JOB = {"running": False, "pending": {}, "done": 0, "error": None}
+
 
 class JsApi:
     def __init__(self, db, config):
@@ -690,10 +693,8 @@ class JsApi:
         works, name, werr = vndb.get_series(self._cfg, sid)
         if werr:
             return {"ok": False, "error": werr}
-        owned = self._owned_vndb_set()
-        for w in works:
-            w["owned"] = w["id"] in owned
-            w["local_id"] = owned.get(w["id"])
+        self._mark_owned(works)
+        self._apply_zh(works)
         result = {"ok": True, "series": {"id": sid, "name": name},
                   "works": works,
                   "owned_count": sum(1 for w in works if w["owned"]),
@@ -794,12 +795,15 @@ class JsApi:
                 works, werr = vndb.get_producer_vns(self._cfg, prod["id"])
                 for w in works:
                     if w.get("released") and w["released"] >= cutoff:
+                        w["maker"] = t["name"]  # 标注所属厂商（新作卡片/角标用）
                         collected[w["id"]] = w
             except Exception:
                 pass
             time.sleep(0.25)  # 节流
         owned = self._owned_vndb_set()
-        lst = sorted(collected.values(), key=lambda x: x.get("released") or "", reverse=True)[:40]
+        lst = sorted(collected.values(),
+                     key=lambda x: (x.get("released") or "", x.get("title") or ""),
+                     reverse=True)[:40]
         for w in lst:
             w["owned"] = w["id"] in owned
             w["local_id"] = owned.get(w["id"])
@@ -807,7 +811,7 @@ class JsApi:
                 g = self._db.query_one("SELECT title FROM games WHERE id=?", (w["local_id"],))
                 if g:
                     w["local_title"] = g["title"]
-            w["tags_zh"] = [self.zh_tags([t])[t] for t in (w.get("tags") or [])]
+        self._apply_zh(lst)
         with _new_lock:
             _NEW_RELEASES = lst
             _NEW_STATE.update(running=False, stage="完成", error=None)
@@ -893,6 +897,24 @@ class JsApi:
         with _new_lock:
             return dict(_TRANSLATE_JOB)
 
+    def _apply_zh(self, works):
+        """给作品实时应用最新中文标签 + 中文标题（后台翻译完成后刷新缓存命中）。"""
+        ids = [w.get("id") for w in works if w.get("id")]
+        if not ids:
+            return
+        all_tags = sorted({t for w in works for t in (w.get("tags") or [])})
+        zh_tags = self.zh_tags(all_tags) if all_tags else {}
+        zh_titles = self.zh_work_titles(ids)
+        for w in works:
+            if zh_tags:
+                w["tags_zh"] = [zh_tags.get(t, t) for t in (w.get("tags") or [])]
+            if zh_titles:
+                w["zh_title"] = zh_titles.get(w["id"])
+        # 触发未翻译的（标签 + 标题）批量翻译
+        if all_tags:
+            self.translate_tags_async(all_tags)
+        self.translate_works_async(works)
+
     def get_maker_profile(self, maker):
         """厂商档案：介绍 + 全部作品（含已拥有标记）。匹配记忆 producer_map 优先，
         找不到/歧义时返回候选列表让用户更正。"""
@@ -905,12 +927,8 @@ class JsApi:
         hit = _maker_cache.get(key)
         if hit and now - hit[0] < 3600:
             result = hit[1]
-            # 实时应用最新中文标签（后台翻译可能刚完成，缓存里是旧映射）
-            all_tags = sorted({t for w in result.get("works", []) for t in (w.get("tags") or [])})
-            if all_tags:
-                zh = self.zh_tags(all_tags)
-                for w in result["works"]:
-                    w["tags_zh"] = [zh.get(t, t) for t in (w.get("tags") or [])]
+            # 实时应用最新中文标签 + 中文标题（后台翻译可能刚完成）
+            self._apply_zh(result.get("works", []))
             return result
         # 1) 记忆命中 → 直接用 vndb_id
         memo = self._db.query_one(
@@ -935,13 +953,7 @@ class JsApi:
         if werr:
             return {"ok": False, "error": werr}
         self._mark_owned(works)
-        # 中文标签映射 + 触发未翻译标签的批量翻译
-        all_tags = sorted({t for w in works for t in (w.get("tags") or [])})
-        if all_tags:
-            zh = self.zh_tags(all_tags)
-            for w in works:
-                w["tags_zh"] = [zh.get(t, t) for t in (w.get("tags") or [])]
-            self.translate_tags_async(all_tags)
+        self._apply_zh(works)
         result = {"ok": True, "producer": prod, "works": works,
                   "mapped": bool(memo),
                   "owned_count": sum(1 for w in works if w["owned"]),
@@ -1049,6 +1061,101 @@ class JsApi:
     def get_tag_translate_status(self):
         with _new_lock:
             return dict(_TAG_JOB)
+
+    # ---------- 作品标题批量翻译（中文名优先展示） ----------
+    def translate_works_async(self, works):
+        """批量翻译作品标题为中文（只译缺失的），落 vndb_work_cache.zh_title。
+        works: [{id, title, title_jp}]；与标签任务同套防御：单调递减+重试限次+轮数上限。"""
+        items = {}
+        for w in works or []:
+            vid = str(w.get("id") or "").strip()
+            if vid and w.get("title"):
+                items[vid] = {"title": w["title"], "title_jp": w.get("title_jp") or ""}
+        if not items:
+            return {"ok": True, "translated": 0}
+        have = {r["vndb_id"] for r in self._db.query(
+            "SELECT vndb_id FROM vndb_work_cache WHERE vndb_id IN (%s)"
+            % ",".join("?" * len(items)), list(items))}
+        missing = {k: v for k, v in items.items() if k not in have}
+        if not missing:
+            return {"ok": True, "translated": 0}
+        with _new_lock:
+            if _WORK_JOB.get("running"):
+                _WORK_JOB["pending"].update(missing)
+                return {"ok": True, "running": True}
+            _WORK_JOB.update(running=True, pending=missing, done=0, error=None)
+        threading.Thread(target=self._run_work_translate, daemon=True).start()
+        return {"ok": True, "running": True}
+
+    def _run_work_translate(self):
+        from .providers import llm
+        attempts = {}
+        try:
+            for _round in range(10):
+                with _new_lock:
+                    pending = dict(_WORK_JOB.get("pending", {}))
+                if not pending:
+                    break
+                batch = dict(list(pending.items())[:12])
+                lines = "\n".join(f"- id={vid}: {v['title']}" + (f"（{v['title_jp']}）" if v.get("title_jp") else "")
+                                 for vid, v in batch.items())
+                system = ("你是 Galgame 中文本地化翻译。把以下作品标题翻译成简体中文（用玩家常用译名，"
+                          "如 Summer Pockets→夏日口袋；没有通用译名就直译）。严格输出 JSON "
+                          "{\"works\":[{\"id\":\"原样id\",\"zh_title\":\"中文\"},...]}，id 必须与输入完全一致。")
+                user = lines
+                result, terr = llm.chat_json(self._cfg, system, user, timeout=60)
+                got = {}
+                if result and isinstance(result.get("works"), list):
+                    for item in result["works"]:
+                        vid = str(item.get("id") or "").strip()
+                        zh = (item.get("zh_title") or "").strip()
+                        if vid and zh:
+                            got[vid] = zh
+                if got:
+                    with _new_lock:
+                        for vid, zh in got.items():
+                            self._db.execute(
+                                "INSERT INTO vndb_work_cache (vndb_id, zh_title, fetched_at)"
+                                " VALUES (?,?,?) ON CONFLICT(vndb_id) DO UPDATE SET zh_title=excluded.zh_title",
+                                (vid, zh, now_iso()))
+                        _WORK_JOB["done"] += len(got)
+                # 单调递减：尝试过的移出；失败的限 2 次重试
+                still = {}
+                for vid, v in batch.items():
+                    if vid in got:
+                        continue
+                    attempts[vid] = attempts.get(vid, 0) + 1
+                    if attempts[vid] < 2:
+                        still[vid] = v
+                with _new_lock:
+                    cur = dict(_WORK_JOB.get("pending", {}))
+                    for vid in batch:
+                        cur.pop(vid, None)
+                    cur.update(still)
+                    _WORK_JOB["pending"] = cur
+                if not got:
+                    time.sleep(2)
+        except Exception as e:
+            with _new_lock:
+                _WORK_JOB["error"] = str(e)[:200]
+        finally:
+            with _new_lock:
+                _WORK_JOB["running"] = False
+                _WORK_JOB["pending"] = {}
+
+    def get_work_translate_status(self):
+        with _new_lock:
+            return dict(_WORK_JOB)
+
+    def zh_work_titles(self, vndb_ids):
+        """批量查作品中文标题缓存。返回 {vndb_id: zh_title}。"""
+        ids = [str(i) for i in (vndb_ids or []) if i]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        rows = self._db.query(
+            f"SELECT vndb_id, zh_title FROM vndb_work_cache WHERE vndb_id IN ({placeholders})", ids)
+        return {r["vndb_id"]: r["zh_title"] for r in rows if r["zh_title"]}
 
     def zh_tags(self, tags):
         """把英文标签列表映射为中文（查缓存，未命中的返回原文）。"""

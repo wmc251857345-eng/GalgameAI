@@ -47,7 +47,7 @@
         <p v-else class="maker-desc dim">（VNDB 暂无简介）</p>
       </div>
 
-      <!-- 标签筛选条 -->
+      <!-- 标签筛选条（默认折叠，只显示高频前 12 个） -->
       <div v-if="allTagNames.length" class="tag-filter">
         <span class="tag-filter-label">筛选：</span>
         <button
@@ -56,12 +56,15 @@
           @click="tagFilter = ''"
         >全部（{{ profile.works.length }}）</button>
         <button
-          v-for="t in allTagNames"
+          v-for="t in displayTags"
           :key="t"
           class="tf-chip"
           :class="{ active: tagFilter === t }"
           @click="tagFilter = tagFilter === t ? '' : t"
         >{{ t }}</button>
+        <button v-if="allTagNames.length > TAG_LIMIT" class="tf-chip tf-more" @click="showAllTags = !showAllTags">
+          {{ showAllTags ? '收起 ▲' : `＋${allTagNames.length - TAG_LIMIT} 更多 ▼` }}
+        </button>
       </div>
 
       <!-- 作品网格 -->
@@ -84,7 +87,7 @@
             <span v-else class="mk-notowned-badge">未拥有</span>
           </div>
           <div class="mk-info">
-            <div class="mk-title" :title="w.title">{{ w.title }}</div>
+            <div class="mk-title" :title="w.zh_title || w.title">{{ w.zh_title || w.title }}</div>
             <div v-if="w.title_jp" class="mk-title-jp" :title="w.title_jp">{{ w.title_jp }}</div>
             <div class="mk-meta">
               <span>{{ w.released || '未知日期' }}</span>
@@ -160,6 +163,8 @@ const LEN = { 1: '很短', 2: '短', 3: '中等', 4: '长', 5: '很长' }
 const FAMILY = new Set(['ser', 'seq', 'preq', 'side', 'fan', 'alt', 'par', 'set', 'orig'])
 
 const tagFilter = ref('')
+const showAllTags = ref(false)
+const TAG_LIMIT = 12
 const fixerOpen = ref(false)
 const fixerKw = ref('')
 const fixerCands = ref([])
@@ -190,6 +195,10 @@ const allTagNames = computed(() => {
   }
   return [...set].sort()
 })
+
+const displayTags = computed(() =>
+  showAllTags.value ? allTagNames.value : allTagNames.value.slice(0, TAG_LIMIT),
+)
 
 const filteredWorks = computed(() => {
   const works = profile.value?.works || []
@@ -287,9 +296,9 @@ onMounted(() => {
   if (tags.size) store.ensureTagTranslate([...tags])
 })
 
-// 标签翻译完成 → 刷新档案（后端缓存命中会实时应用最新中文标签）
+// 标签/标题翻译完成 → 刷新档案（后端缓存命中会实时应用最新中文）
 watch(
-  () => store.tagTranslating,
+  () => store.tagTranslating || store.workTranslating,
   (v, old) => {
     if (old && !v && store.currentView === 'maker' && profile.value) {
       store.loadMakerProfile(store.maker.key)
@@ -299,5 +308,6 @@ watch(
 
 onBeforeUnmount(() => {
   tagFilter.value = ''
+  showAllTags.value = false
 })
 </script>

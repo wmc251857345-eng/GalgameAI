@@ -528,6 +528,7 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .tf-chip.active {
   background: var(--accent); color: #101319; font-weight: 600; border-color: var(--accent);
 }
+.tf-more { color: var(--accent); border-style: dashed; }
 
 /* 更正厂商弹层 */
 .fixer-panel { width: min(560px, 92vw); }
@@ -567,6 +568,11 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .wall-follow {
   position: absolute; top: 8px; right: 10px; z-index: 5; font-size: 16px; color: #ffb340;
 }
+.wall-new {
+  position: absolute; top: 8px; right: 30px; z-index: 5; font-size: 10.5px;
+  padding: 1px 8px; border-radius: 9px; font-weight: 700;
+  background: rgba(255, 90, 60, 0.92); color: #fff;
+}
 .wall-covers {
   position: relative; height: 118px; display: flex; align-items: center;
   justify-content: center; margin-bottom: 8px;
@@ -593,18 +599,20 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
   display: flex; justify-content: space-between; align-items: baseline;
   font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 10px;
 }
+.nr-sub { font-size: 11.5px; color: var(--text-dim); font-weight: 400; margin-left: 6px; }
 .nr-stage { font-size: 11.5px; color: var(--accent); font-weight: 400; }
 .nr-strip {
   display: flex; gap: 12px; overflow-x: auto; padding-bottom: 8px;
+  align-items: flex-start;
 }
 .nr-strip::-webkit-scrollbar { height: 8px; }
 .nr-strip::-webkit-scrollbar-thumb { background: #2a3a4a; border-radius: 4px; }
 .nr-card {
-  flex: 0 0 120px; cursor: pointer; transition: transform 0.15s;
+  flex: 0 0 128px; width: 128px; cursor: pointer; transition: transform 0.15s;
 }
 .nr-card:hover { transform: translateY(-3px); }
 .nr-cover-wrap {
-  position: relative; aspect-ratio: 3 / 4; border-radius: 6px; overflow: hidden;
+  position: relative; width: 128px; height: 170px; border-radius: 6px; overflow: hidden;
   background: var(--bg-deep); border: 1px solid var(--border);
 }
 .nr-cover { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -616,10 +624,14 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .nr-owned { background: rgba(164, 208, 7, 0.9); color: #101319; }
 .nr-new { background: rgba(255, 90, 60, 0.92); color: #fff; }
 .nr-title {
-  font-size: 11.5px; color: var(--text-bright); margin-top: 5px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 11.5px; color: var(--text-bright); margin-top: 5px; line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; min-height: 32px;
 }
-.nr-meta { font-size: 10.5px; color: var(--text-dim); }
+.nr-meta {
+  display: flex; gap: 6px; flex-wrap: wrap; font-size: 10.5px; color: var(--text-dim);
+  margin-top: 2px;
+}
 
 /* ---------- 作品详情弹层 ---------- */
 .wd-overlay {

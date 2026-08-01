@@ -425,6 +425,11 @@ export const api = {
     return { running: false, done: 0, pending: [] }
   },
 
+  async getWorkTranslateStatus() {
+    if (hasBridge()) return window.pywebview.api.get_work_translate_status()
+    return { running: false, done: 0, pending: {} }
+  },
+
   async followMaker(name, vndbId, displayName) {
     if (hasBridge()) return window.pywebview.api.follow_maker(name, vndbId, displayName)
     return { ok: true }

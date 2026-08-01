@@ -11,10 +11,11 @@
     </div>
 
     <!-- 新作推荐区 -->
-    <div v-if="store.newReleases.items.length" class="new-releases">
+    <div class="new-releases">
       <div class="nr-head">
-        <span>🔥 新作推荐（近两年，来自你收藏的厂商）</span>
-        <span v-if="store.newReleases.running" class="nr-stage">{{ store.newReleases.stage }}</span>
+        <span>🔥 新作推荐<span class="nr-sub">（你关注/拥有的厂商，近两年）</span></span>
+        <span v-if="store.newReleases.running" class="nr-stage">抓取中 {{ store.newReleases.done }}/{{ store.newReleases.total }} · {{ store.newReleases.stage }}</span>
+        <span v-else-if="store.workTranslating" class="nr-stage">标题翻译中…</span>
       </div>
       <div class="nr-strip">
         <div
@@ -29,8 +30,8 @@
             <span v-if="w.owned" class="nr-owned" title="本地库已有">✓</span>
             <span v-else class="nr-new" title="新作！">NEW</span>
           </div>
-          <div class="nr-title" :title="w.title">{{ w.local_title || w.title }}</div>
-          <div class="nr-meta">{{ w.released || '' }}<span v-if="w.rating"> · ★ {{ (w.rating / 10).toFixed(1) }}</span></div>
+          <div class="nr-title" :title="w.local_title || w.zh_title || w.title">{{ w.local_title || w.zh_title || w.title }}</div>
+          <div class="nr-meta"><span v-if="w.maker">{{ w.maker }}</span><span>{{ w.released || '' }}</span><span v-if="w.rating">★ {{ (w.rating / 10).toFixed(1) }}</span></div>
         </div>
       </div>
     </div>
@@ -46,6 +47,7 @@
     <div v-else class="wall-grid">
       <div v-for="m in filtered" :key="m.maker" class="wall-card" @click="enterMaker(m)">
         <span v-if="store.isFollowed(m.maker)" class="wall-follow" title="已关注">★</span>
+        <span v-if="newCount(m.maker)" class="wall-new" :title="'近两年新作 ' + newCount(m.maker) + ' 部'">{{ newCount(m.maker) }}</span>
         <div class="wall-covers">
           <template v-if="m.covers.length">
             <img
@@ -83,6 +85,12 @@ function enterMaker(m) {
   store.openMaker(m.maker)
 }
 
+function newCount(maker) {
+  // 新作区里该厂商未拥有的作品数（粗匹配：以 local_title/maker 近似）
+  const mk = maker.toLowerCase()
+  return store.newReleases.items.filter((w) => !w.owned && (w.maker || '').toLowerCase() === mk).length
+}
+
 function refresh() {
   store.refreshNewReleases()
 }
@@ -91,5 +99,6 @@ onMounted(() => {
   store.loadMakersWall()
   store.loadNewReleases()
   store.loadFollows()
+  store.pollWorkTranslate()
 })
 </script>

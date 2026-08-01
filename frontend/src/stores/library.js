@@ -21,6 +21,7 @@ export const useLibraryStore = defineStore('library', {
     makers: { list: [], loading: false },
     follows: [],
     tagTranslating: false,
+    workTranslating: false,
     newReleases: { items: [], loading: false, running: false, done: 0, total: 0, stage: '' },
     workDetail: { vndbId: null, work: null, loading: false, error: null, translating: false, translateError: null },
     selectedGameId: null,
@@ -372,6 +373,14 @@ export const useLibraryStore = defineStore('library', {
     async ensureTagTranslate(tags) {
       const r = await api.translateTags(tags)
       if (r && r.ok) this.pollTagTranslate()
+    },
+
+    async pollWorkTranslate() {
+      const st = await api.getWorkTranslateStatus()
+      this.workTranslating = !!st.running
+      if (st.running) {
+        setTimeout(() => this.pollWorkTranslate(), 2500)
+      }
     },
   },
 })
