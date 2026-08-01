@@ -1,0 +1,2 @@
+# GALA 后端依赖（Python 3.11+）
+pywebview>=5.0

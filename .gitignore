@@ -1,0 +1,21 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.spec
+build/
+dist/
+
+# 前端
+node_modules/
+frontend/dist/
+
+# 本地数据（含 API key）
+config/config.json
+database/*.db
+cache/
+logs/
+
+# 编辑器
+.idea/
+.vscode/
