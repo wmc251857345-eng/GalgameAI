@@ -64,7 +64,7 @@ logs/       日志
 1. **pywebview js_api 注入有竞态**：Vue 挂载可能早于桥接注入，`store.load()` 会走到 mock 分支导致整个应用显示假数据（表现为"扫描/编辑没反应"）。前端必须 `await apiReady()`（监听 `pywebviewready` 事件 + 轮询兜底）后再拉数据。
 2. **`_game_row` / `_tags` 是模块级函数**，签名 `_game_row(g, db, with_extra=False)`，必须传 db。曾因 `_game_row` 调类方法 `_tags` 导致 `get_game` 抛 NameError、详情页永远打不开。
 3. **VNDB 评分是 0-100 制**：入库时 `_apply_match` 统一转 10 分制（>20 则 /10），展示层 `rating_disp` 兼容历史遗留原始值。
-4. **回归测试**：`scripts/test_edit_flow.py`（后端 API 全链路，DB 副本）和 `scripts/test_ui_flow.py`（隐藏 pywebview 窗口 + 注入 JS 驱动真实 UI）。改完记得跑。
+4. **回归测试**：`scripts/verify.py`（规范验证：迁移幂等/库体验/记忆/稳定性/构建新鲜度，跑 `venv\Scripts\python scripts/verify.py`）、`scripts/test_edit_flow.py`（后端 API 全链路，DB 副本）和 `scripts/test_ui_flow.py`（隐藏 pywebview 窗口 + 注入 JS 驱动真实 UI）。改完记得跑。
 5. **删除游戏**必须级联清理 sessions/staff/screenshots/analysis_jobs 等表，并删 cache/covers 里的封面文件。
 6. **BGM API 搜索返回 `{"results":N,"list":[...]}` 字典**，不是裸列表——`isinstance(data, list)` 判断会让 bgm.search 永远空（曾导致 bgm 数据源静默失效）。
 7. **pywebview closing 事件可取消**：handler 返回 `False` → 取消关闭（用于"关窗最小化到托盘"）；托盘用 pystray `run_detached()`。
