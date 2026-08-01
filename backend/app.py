@@ -69,7 +69,7 @@ def _startup_tasks(cfg, db):
         logging.error("时长补记失败: %s", e)
         print(f"[GALA] 时长补记失败: {e}")
     try:
-        from .api import JsApi
+        from .api import JsApi, maybe_auto_backup
         js = JsApi(db, cfg)
         js.refresh_new_releases()  # 启动即预抓取新作（后台，厂商墙打开即有数据）
         logging.info("新作预抓取已启动")
