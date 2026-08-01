@@ -105,7 +105,9 @@
           <button class="btn small" @click="pickLocal">🖼 选择本地图片</button>
           <button class="btn small" @click="refreshCover">⟳ 从 VNDB 补封面</button>
           <input v-model="coverUrlInput" class="url-input" placeholder="或粘贴图片 URL 下载" @keyup.enter="setUrl" />
-          <button class="btn small" @click="setUrl">下载</button>
+          <button class="btn small" @click="setUrl" :disabled="downloading">
+            {{ downloading ? '下载中…' : '下载' }}
+          </button>
         </div>
         <div v-if="coverCands.length" class="cover-cands">
           <span class="dim">候选封面（点击选用）：</span>
@@ -181,6 +183,7 @@ const g = computed(() => store.detail)
 const editing = ref(false)
 const saving = ref(false)
 const reanalyzing = ref(false)
+const downloading = ref(false)
 let jobTimer = null
 onUnmounted(() => clearTimeout(jobTimer))
 const form = reactive({})
@@ -272,12 +275,17 @@ async function pickLocal() {
 
 async function setUrl() {
   const url = coverUrlInput.value.trim()
-  if (!url) return
-  const r = await api.setCoverUrl(g.value.id, url)
-  if (r && !r.ok) alert(r.error)
-  else {
-    coverUrlInput.value = ''
-    store.refreshDetail()
+  if (!url || downloading.value) return
+  downloading.value = true
+  try {
+    const r = await api.setCoverUrl(g.value.id, url)
+    if (r && !r.ok) alert(r.error)
+    else {
+      coverUrlInput.value = ''
+      store.refreshDetail()
+    }
+  } finally {
+    downloading.value = false
   }
 }
 

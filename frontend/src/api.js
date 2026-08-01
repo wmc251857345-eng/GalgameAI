@@ -237,7 +237,9 @@ export const api = {
   },
 
   async setCoverUrl(id, url) {
-    if (hasBridge()) return window.pywebview.api.set_cover_url(id, url)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.set_cover_url(id, url), 45000, '封面下载')
+    }
     await delay()
     return { ok: true }
   },

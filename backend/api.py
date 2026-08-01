@@ -536,7 +536,7 @@ class JsApi:
             return {"ok": False, "error": "窗口未就绪"}
         try:
             result = win.create_file_dialog(
-                file_types=("图片文件", "*.jpg;*.jpeg;*.png;*.webp;*.bmp"))
+                file_types=("图片文件 (*.jpg;*.jpeg;*.png;*.webp;*.bmp)",))
         except Exception as e:
             return {"ok": False, "error": f"文件对话框失败: {e}"}
         if not result:
@@ -553,16 +553,30 @@ class JsApi:
         return {"ok": True, "cover_url": _cover_url(rel)}
 
     def set_cover_url(self, game_id, url):
-        """从 URL 下载封面。"""
+        """从 URL 下载封面（带具体错误信息 + 内容校验，避免"没反应"）。"""
         gid = int(game_id)
         url = (url or "").strip()
         if not url.startswith("http"):
             return {"ok": False, "error": "URL 无效"}
         from . import enrich
-        rel = enrich.download_cover(self._cfg, gid, url)
-        if not rel:
-            return {"ok": False, "error": "下载失败"}
-        self._db.execute("UPDATE games SET cover_path=?, cover_url=?, source='manual' WHERE id=?", (rel, url, gid))
+        from .utils import http_session
+        dest = enrich._cover_dest(gid, url)
+        os.makedirs(paths.COVERS_DIR, exist_ok=True)
+        s = http_session(self._cfg, proxy_ok=True)
+        try:
+            r = s.get(url, timeout=30)
+            if r.status_code != 200:
+                return {"ok": False, "error": f"下载失败：HTTP {r.status_code}"}
+            if not r.content or len(r.content) < 100:
+                return {"ok": False, "error": "下载内容为空或非有效图片"}
+            with open(dest, "wb") as f:
+                f.write(r.content)
+        except Exception as e:
+            return {"ok": False, "error": f"下载失败：{str(e)[:100]}"}
+        rel = os.path.relpath(dest, paths.BASE).replace("\\", "/")
+        self._db.execute(
+            "UPDATE games SET cover_path=?, cover_url=?, source='manual' WHERE id=?",
+            (rel, url, gid))
         return {"ok": True, "cover_url": _cover_url(rel)}
 
     def remove_game(self, game_id):
