@@ -118,7 +118,9 @@ export const api = {
   },
 
   async getGame(id) {
-    if (hasBridge()) return window.pywebview.api.get_game(id)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.get_game(id), 20000, '游戏详情')
+    }
     await delay()
     const g = MOCK_GAMES.find((x) => x.id === id)
     return g ? { ...g, candidates: MOCK_PENDING.find((p) => p.id === id)?.candidates || [], running: false } : null

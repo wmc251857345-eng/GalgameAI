@@ -1,7 +1,11 @@
 <template>
   <div class="app">
-    <Sidebar :current="store.currentView" @nav="store.currentView = $event" />
+    <Sidebar :current="store.currentView" @nav="onNav" />
     <div class="main">
+      <!-- 全局渲染错误横幅（点击关闭；渲染异常不再静默冻结） -->
+      <div v-if="errorBanner" class="error-banner" @click="errorBanner = ''">
+        ⚠ {{ errorBanner }}
+      </div>
       <TopBar
         v-if="store.currentView === 'library'"
         v-model:search="store.search"
@@ -23,7 +27,7 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useLibraryStore } from './stores/library.js'
 import { apiReady } from './api.js'
 import Sidebar from './components/Sidebar.vue'
@@ -39,6 +43,15 @@ import StatsView from './views/StatsView.vue'
 import SettingsView from './views/SettingsView.vue'
 
 const store = useLibraryStore()
+const errorBanner = ref('')
+
+// main.js 的 errorHandler 会把渲染错误写到这里显示
+window.__galaSetError = (msg) => { errorBanner.value = msg }
+
+function onNav(view) {
+  store.currentView = view
+}
+
 onMounted(async () => {
   await apiReady() // 等 pywebview 桥接注入完成再加载真实数据（修复 mock 竞态）
   store.load()

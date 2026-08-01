@@ -4,6 +4,13 @@
 
     <div v-if="store.detailLoading" class="loading">加载中…</div>
 
+    <!-- 加载失败：显示原因 + 返回，绝不空白/转圈 -->
+    <div v-else-if="store.detailError" class="detail-error">
+      <p>⚠ {{ store.detailError }}</p>
+      <button class="btn" @click="retry">🔄 重试</button>
+      <button class="btn" @click="store.back()">← 返回游戏库</button>
+    </div>
+
     <template v-else-if="g">
       <!-- ================= 头部横幅区 ================= -->
       <div class="detail-hero">
@@ -214,6 +221,10 @@ const sourceText = computed(() => {
 
 function confClass(score) {
   return score >= 0.8 ? 'high' : score >= 0.6 ? 'mid' : 'low'
+}
+
+function retry() {
+  store.openDetail(store.selectedGameId)
 }
 
 // ---- 编辑 ----

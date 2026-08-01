@@ -682,3 +682,15 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .wd-desc-title { font-size: 13px; color: var(--text); margin: 0 0 8px; }
 .wd-desc p { font-size: 13px; line-height: 1.85; color: var(--text); margin: 0; }
 .wd-translating { color: var(--accent) !important; margin-top: 8px !important; font-size: 12px !important; }
+
+/* ---------- 全局错误横幅 ---------- */
+.error-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+  background: #7a1f1f; color: #ffd7d7; padding: 8px 14px;
+  font-size: 12.5px; cursor: pointer; text-align: center;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+.detail-error {
+  text-align: center; padding: 60px 20px; color: var(--text-dim);
+}
+.detail-error .btn { margin-top: 14px; }

@@ -26,6 +26,7 @@ export const useLibraryStore = defineStore('library', {
     workDetail: { vndbId: null, work: null, loading: false, error: null, translating: false, translateError: null },
     selectedGameId: null,
     detail: null,
+    detailError: null,
     detailLoading: false,
     pendingGames: [],
     pendingLoading: false,
@@ -115,8 +116,16 @@ export const useLibraryStore = defineStore('library', {
       this.selectedGameId = id
       this.currentView = 'detail'
       this.detailLoading = true
+      this.detailError = null
       try {
         this.detail = await api.getGame(id)
+        if (!this.detail) {
+          this.detailError = '游戏数据不存在（可能已被删除）'
+        }
+      } catch (e) {
+        // 超时/异常 → 显示错误+返回，绝不永久空白/转圈
+        this.detailError = e.message || '加载失败（超时或网络异常）'
+        this.detail = null
       } finally {
         this.detailLoading = false
       }
@@ -124,7 +133,12 @@ export const useLibraryStore = defineStore('library', {
 
     async refreshDetail() {
       if (!this.selectedGameId) return
-      this.detail = await api.getGame(this.selectedGameId)
+      try {
+        this.detail = await api.getGame(this.selectedGameId)
+        this.detailError = null
+      } catch (e) {
+        this.detailError = e.message || '刷新失败'
+      }
     },
 
     back() {

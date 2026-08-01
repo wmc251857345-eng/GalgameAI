@@ -17,4 +17,14 @@ window.addEventListener('unhandledrejection', (e) => {
   reportError('未捕获的 Promise 异常: ' + (e.reason?.message || String(e.reason || '').slice(0, 200)))
 })
 
-createApp(App).use(createPinia()).mount('#app')
+const app = createApp(App)
+app.use(createPinia())
+// Vue 渲染/生命周期错误（onerror 抓不到）→ 上报日志 + 全局横幅
+app.config.errorHandler = (err, _instance, info) => {
+  const msg = `[Vue渲染] ${info || ''} ${err?.message || err}`
+  reportError(msg)
+  if (window.__galaSetError) {
+    window.__galaSetError((err?.message || err) + '（详情见 设置→查看日志）')
+  }
+}
+app.mount('#app')
