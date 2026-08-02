@@ -23,15 +23,18 @@ def _cover_url(path):
     if not path:
         return None
     p = str(path).replace("\\", "/")
-    if p.startswith("http"):
+    if p.startswith("http://") or p.startswith("https://"):
         return p
     if os.path.isabs(path):
         try:
             rel = os.path.relpath(path, paths.BASE).replace("\\", "/")
-            return f"{BASE_URL}/{rel}"
+            # Use urllib.parse.quote to handle spaces in paths
+            import urllib.parse
+            return f"{BASE_URL}/{urllib.parse.quote(rel, safe=':/')}"
         except ValueError:
             return None
-    return f"{BASE_URL}/{p}"
+    import urllib.parse
+    return f"{BASE_URL}/{urllib.parse.quote(p, safe=':/')}"
 
 
 def _do_backup(db, out_dir):
@@ -120,6 +123,7 @@ def _game_row(g, db, with_extra=False):
     row["cover_url"] = (_cover_url(g.get("cover_path"))
                         or (g.get("cover_url")
                             if str(g.get("cover_url") or "").startswith("http") else None))
+    row["cover_orig_url"] = _cover_url(g.get("cover_orig_path"))  # 裁剪编辑器用原图
     row["rating_disp"] = _rating_disp(g.get("rating"))
     row["score"] = row["rating_disp"]            # 网格卡片 hover 用
     row["hue"] = (int(g["id"] or 0) * 47) % 360  # 无封面时占位渐变主色
@@ -190,6 +194,103 @@ class JsApi:
             "confirmed": one("SELECT COUNT(*) c FROM games WHERE status=2")["c"],
             "playtime_hours": round(one("SELECT COALESCE(SUM(playtime_seconds),0) s FROM games")["s"] / 3600, 1),
             "makers": one("SELECT COUNT(DISTINCT maker) c FROM games WHERE maker IS NOT NULL AND maker!=''")["c"],
+        }
+
+    def get_stats(self):
+        """统计页完整数据：总览 + 厂商 TOP + 标签云 + 年份分布 + 时长榜 + 数据源分布。"""
+        def q(sql, *a):
+            return self._db.query(sql, *a)
+        def one(sql, *a):
+            return self._db.query_one(sql, *a)
+
+        # 总览
+        overview = {
+            "total": one("SELECT COUNT(*) c FROM games")["c"],
+            "confirmed": one("SELECT COUNT(*) c FROM games WHERE status=2")["c"],
+            "pending": one("SELECT COUNT(*) c FROM games WHERE status=1")["c"],
+            "skipped": one("SELECT COUNT(*) c FROM games WHERE status=3")["c"],
+            "favorites": one("SELECT COUNT(*) c FROM games WHERE favorite=1")["c"],
+            "hanhua": one("SELECT COUNT(*) c FROM games WHERE hanhua=1")["c"],
+            "playtime_hours": round(one("SELECT COALESCE(SUM(playtime_seconds),0) s FROM games")["s"] / 3600, 1),
+            "played_count": one("SELECT COUNT(*) c FROM games WHERE playtime_seconds>0")["c"],
+            "total_size_gb": round(one("SELECT COALESCE(SUM(size_bytes),0) s FROM games")["s"] / (1024**3), 1),
+        }
+
+        # 厂商 TOP（游戏数，近似名合并：Miel/Miel (ミエル)/miel → 一家；取前 12）
+        import difflib
+        mrows = q(
+            "SELECT maker, COUNT(*) c, COALESCE(AVG(rating),0) avg_rating,"
+            " COALESCE(SUM(playtime_seconds),0) pt FROM games"
+            " WHERE maker IS NOT NULL AND maker!='' AND status IN (1,2)"
+            " GROUP BY maker")
+        mgroups = []  # [{"names": [...], "keys": [...], "count", "rating_sum", "pt"}]
+        for r in mrows:
+            key = self._maker_key(r["maker"])
+            if not key:
+                continue
+            for g in mgroups:
+                if any(difflib.SequenceMatcher(None, key, k).ratio() >= 0.8 for k in g["keys"]):
+                    g["names"].append(r["maker"])
+                    g["keys"].append(key)
+                    g["count"] += r["c"]
+                    g["rating_sum"] += (r["avg_rating"] or 0) * r["c"]
+                    g["pt"] += r["pt"] or 0
+                    break
+            else:
+                mgroups.append({
+                    "names": [r["maker"]], "keys": [key], "count": r["c"],
+                    "rating_sum": (r["avg_rating"] or 0) * r["c"], "pt": r["pt"] or 0,
+                })
+        makers = []
+        for g in sorted(mgroups, key=lambda x: (-x["count"], x["names"][0]))[:12]:
+            name_counts = {}
+            for n in g["names"]:
+                name_counts[n] = name_counts.get(n, 0) + 1
+            makers.append({
+                "name": max(name_counts, key=name_counts.get),
+                "aliases": [n for n in g["names"] if n != max(name_counts, key=name_counts.get)][:3],
+                "count": g["count"],
+                "avg_rating": round(g["rating_sum"] / g["count"], 1) if g["count"] else 0,
+                "playtime_hours": round(g["pt"] / 3600, 1),
+            })
+
+        # 标签云（前 20）
+        tags = []
+        for r in q(
+                "SELECT t.name, COUNT(*) c FROM game_tags gt JOIN tags t ON t.id=gt.tag_id"
+                " GROUP BY t.name ORDER BY c DESC, t.name LIMIT 20"):
+            tags.append({"name": r["name"], "count": r["c"]})
+
+        # 年份分布（前 12 年，含未知）
+        years = []
+        for r in q(
+                "SELECT substr(released,1,4) y, COUNT(*) c FROM games"
+                " WHERE status IN (1,2) GROUP BY y ORDER BY y DESC LIMIT 12"):
+            years.append({"year": r["y"] or "未知", "count": r["c"]})
+
+        # 时长榜（玩最多的前 10）
+        top_played = []
+        for r in q(
+                "SELECT id, title, playtime_seconds, last_played FROM games"
+                " WHERE playtime_seconds>0 ORDER BY playtime_seconds DESC LIMIT 10"):
+            top_played.append({
+                "id": r["id"], "title": r["title"],
+                "hours": round((r["playtime_seconds"] or 0) / 3600, 1),
+                "last_played": r["last_played"],
+            })
+
+        # 数据源分布
+        sources = {}
+        for r in q("SELECT source, COUNT(*) c FROM games GROUP BY source"):
+            sources[r["source"] or "local"] = r["c"]
+
+        return {
+            "overview": overview,
+            "makers": makers,
+            "tags": tags,
+            "years": years,
+            "top_played": top_played,
+            "sources": sources,
         }
 
     def list_games(self, limit=1000, offset=0, sort="title", query=""):
@@ -387,6 +488,14 @@ class JsApi:
         else:
             res["llm"] = {"ok": None, "note": "未配置 AI API Key"}
 
+        t0 = time.time()
+        try:
+            from .providers import steam
+            cands = steam.search(self._cfg, "summer pockets", limit=1)
+            res["steam"] = {"ok": len(cands) > 0, "ms": int((time.time() - t0) * 1000)}
+        except Exception as e:
+            res["steam"] = {"ok": False, "ms": int((time.time() - t0) * 1000), "error": str(e)}
+
         return res
 
     # ---------- 失效路径 / 重定位 ----------
@@ -454,19 +563,20 @@ class JsApi:
     @staticmethod
     def _refresh_game(cfg, db, game):
         """已入库游戏刷新（被 reanalyze 后台任务调用）：
-        - 有 vndb_id → VNDB 精确刷新（封面/评分/时长/简介）+ AI 润色
-        - 无 vndb_id（纯 AI 识别）→ 完整重新识别（AI 可能认错）
+        - 有 vndb_id → VNDB 精确刷新；有 steam_id → Steam 精确刷新
+        - 都没有（纯 AI 识别）→ 完整重新识别（AI 可能认错）
         """
         from . import enrich
-        from .providers import vndb
-        if not game.get("vndb_id"):
+        from .providers import steam, vndb
+        if not game.get("vndb_id") and not game.get("steam_id"):
             db.execute("UPDATE games SET status=0 WHERE id=?", (game["id"],))
             return enrich._analyze_one(cfg, db, game)
-        cand, _ = vndb.get(cfg, game["vndb_id"])
+        cand, err = (vndb.get(cfg, game["vndb_id"]) if game.get("vndb_id")
+                     else steam.get(cfg, game["steam_id"]))
         if cand:
             cand["score"] = 1.0
             enrich._apply_match(cfg, db, game, cand)
-            return {"status": 2, "refreshed_from": "vndb"}
+            return {"status": 2, "refreshed_from": "vndb" if game.get("vndb_id") else "steam"}
         enrich._enrich_ai(cfg, db, game, {
             "title": game["title"], "title_orig": game.get("title_jp"),
             "maker": game.get("maker"), "released": game.get("released"),
@@ -479,7 +589,7 @@ class JsApi:
         "title", "title_jp", "title_en", "title_zh", "maker", "brand",
         "released", "rating", "length_minutes", "length_level", "description",
         "exe_path", "workdir", "launch_args", "use_locale_emu", "hanhua", "status",
-        "favorite", "vndb_id",
+        "favorite", "vndb_id", "steam_id",
     }
 
     def update_game(self, game_id, fields):
@@ -501,6 +611,10 @@ class JsApi:
         if not clean:
             return {"ok": False, "error": "没有可更新的字段"}
         clean.setdefault("status", 2)  # 手动编辑即视为用户确认入库
+        # 制作组名自动锚定：手动改名也统一到规范名（同一厂商不再出现多写法）
+        if clean.get("maker"):
+            from . import makers
+            clean["maker"] = makers.canonical(self._db, clean["maker"])
         sets = ", ".join(f"{k}=?" for k in clean)
         params = list(clean.values()) + [gid]
         self._db.execute(f"UPDATE games SET {sets}, source='manual' WHERE id=?", params)
@@ -585,6 +699,115 @@ class JsApi:
             (rel, url, gid))
         return {"ok": True, "cover_url": _cover_url(rel)}
 
+    # ---------- 封面裁剪（自定义截取区域 + 重置自动适配） ----------
+    @staticmethod
+    def _cover_abs(p):
+        """cover_path（相对 BASE 或绝对）→ 绝对路径；不存在返回 None。"""
+        if not p:
+            return None
+        abs_p = os.path.join(paths.BASE, str(p).replace("/", os.sep)) if not os.path.isabs(p) else p
+        return abs_p if os.path.exists(abs_p) else None
+
+    def _ensure_cover_file(self, game):
+        """确保有本地封面文件：cover_path 优先；只有远程 URL 时先下载。
+        返回 (绝对路径, 是否新下载)。"""
+        p = self._cover_abs(game.get("cover_path")) or self._cover_abs(game.get("cover_orig_path"))
+        if p:
+            return p, False
+        url = (game.get("cover_url") or "").strip()
+        if not url.startswith("http"):
+            return None, False
+        dest = os.path.join(paths.COVERS_DIR, f"{game['id']}_orig_src.jpg")
+        from .utils import http_session
+        try:
+            s = http_session(self._cfg, proxy_ok=True)
+            r = s.get(url, timeout=30)
+            if r.status_code == 200 and len(r.content or b"") > 100:
+                os.makedirs(paths.COVERS_DIR, exist_ok=True)
+                with open(dest, "wb") as f:
+                    f.write(r.content)
+                self._db.execute(
+                    "UPDATE games SET cover_orig_path=?, cover_path=?, cover_url=? WHERE id=?",
+                    (os.path.relpath(dest, paths.BASE).replace("\\", "/"),
+                     os.path.relpath(dest, paths.BASE).replace("\\", "/"), None, game["id"]))
+                return dest, True
+        except Exception:
+            pass
+        return None, False
+
+    def set_cover_crop(self, game_id, x, y, w, h):
+        """按比例裁剪封面（x/y/w/h 均为原图 0~1 小数）：原图存 cover_orig_path，
+        裁好的存 {id}_crop.jpg 并作为新 cover_path（所有视图统一生效）。
+        w/h 可传 0 表示"自动适配"（清空手动裁剪）。"""
+        gid = int(game_id)
+        game = self._db.query_one("SELECT * FROM games WHERE id=?", (gid,))
+        if not game:
+            return {"ok": False, "error": "游戏不存在"}
+        try:
+            x, y, w, h = float(x or 0), float(y or 0), float(w or 0), float(h or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "裁剪参数无效"}
+        if w <= 0 or h <= 0 or w > 1 or h > 1:
+            return {"ok": False, "error": "裁剪区域无效"}
+        src, _ = self._ensure_cover_file(game)
+        if not src:
+            return {"ok": False, "error": "没有可裁剪的封面（先选本地图片或下载封面）"}
+        try:
+            from PIL import Image
+            img = Image.open(src)
+            W, H = img.size
+            if W < 4 or H < 4:
+                return {"ok": False, "error": "图片尺寸过小，无法裁剪"}
+            box = (round(x * W), round(y * H), round((x + w) * W), round((y + h) * H))
+            # 边界夹紧 + 最小 8px 保护
+            box = (max(0, box[0]), max(0, box[1]),
+                   min(W, max(box[0] + 8, box[2])), min(H, max(box[1] + 8, box[3])))
+            if box[2] - box[0] < 8 or box[3] - box[1] < 8:
+                return {"ok": False, "error": "裁剪区域过小"}
+            crop = img.crop(box)
+            if crop.mode in ("RGBA", "LA", "P"):
+                crop = crop.convert("RGBA")
+                bg = Image.new("RGB", crop.size, (255, 255, 255))
+                bg.paste(crop, mask=crop.split()[-1])
+                crop = bg
+            elif crop.mode != "RGB":
+                crop = crop.convert("RGB")
+            os.makedirs(paths.COVERS_DIR, exist_ok=True)
+            dest = os.path.join(paths.COVERS_DIR, f"{gid}_crop.jpg")
+            crop.save(dest, "JPEG", quality=92)
+        except Exception as e:
+            return {"ok": False, "error": f"裁剪失败: {str(e)[:120]}"}
+        rel = os.path.relpath(dest, paths.BASE).replace("\\", "/")
+        # 首次裁剪：记下原图路径（用于重置/重新裁剪）
+        orig = game.get("cover_orig_path") or game.get("cover_path") or rel
+        if not game.get("cover_orig_path"):
+            self._db.execute("UPDATE games SET cover_orig_path=? WHERE id=?", (orig, gid))
+        self._db.execute(
+            "UPDATE games SET cover_path=?, cover_url=NULL, source='manual' WHERE id=?",
+            (rel, gid))
+        return {"ok": True, "cover_url": _cover_url(rel)}
+
+    def clear_cover_crop(self, game_id):
+        """重置为自动适配：恢复裁剪前的原图（删掉手动裁剪文件）。"""
+        gid = int(game_id)
+        game = self._db.query_one("SELECT cover_path, cover_orig_path FROM games WHERE id=?",
+                                  (gid,))
+        if not game:
+            return {"ok": False, "error": "游戏不存在"}
+        orig = game.get("cover_orig_path")
+        crop_p = self._cover_abs(game.get("cover_path"))
+        if crop_p and os.path.basename(crop_p) == f"{gid}_crop.jpg":
+            try:
+                os.remove(crop_p)
+            except OSError:
+                pass
+        if orig:
+            self._db.execute(
+                "UPDATE games SET cover_path=?, cover_orig_path=NULL, source='manual' WHERE id=?",
+                (orig, gid))
+            return {"ok": True, "cover_url": _cover_url(orig)}
+        return {"ok": False, "error": "没有手动裁剪记录"}
+
     def remove_game(self, game_id):
         gid = int(game_id)
         g = self._db.query_one("SELECT cover_path FROM games WHERE id=?", (gid,))
@@ -601,6 +824,357 @@ class JsApi:
             except OSError:
                 pass
         return {"ok": True}
+
+    # ---------- 手动导入 / AI 补全 ----------
+    def search_candidates(self, keyword):
+        """导入弹窗用：按关键词搜 VNDB + Bangumi 候选（标题/厂商/年份/封面/简介）。"""
+        kw = (keyword or "").strip()
+        if not kw:
+            return {"ok": False, "error": "关键词为空"}
+        from .enrich import _expand_keys
+        from .providers import bgm, steam, vndb
+        keys = []
+        for v in _expand_keys(kw):
+            if v and v not in keys:
+                keys.append(v)
+        out = []
+        for k in keys[:5]:
+            try:
+                cands, verr = vndb.search(self._cfg, k, limit=4)  # 返回 (list, err)
+                for c in cands or []:
+                    out.append({"provider": "vndb", "external_id": c["external_id"],
+                                "title": c.get("title"), "title_orig": c.get("title_orig"),
+                                "maker": c.get("maker"), "released": c.get("released"),
+                                "rating": c.get("rating"), "cover_url": c.get("cover_url"),
+                                "summary": (c.get("summary") or "")[:200],
+                                "tags": c.get("tags", [])[:8]})
+            except Exception:
+                pass
+            try:
+                for c in bgm.search(self._cfg, k, limit=4) or []:
+                    out.append({"provider": "bgm", "external_id": c["external_id"],
+                                "title": c.get("title"), "title_orig": c.get("title_orig"),
+                                "maker": c.get("maker"), "released": c.get("released"),
+                                "rating": c.get("rating"), "cover_url": c.get("cover_url"),
+                                "summary": (c.get("summary") or "")[:200],
+                                "tags": c.get("tags", [])[:8]})
+            except Exception:
+                pass
+            try:
+                for c in steam.search(self._cfg, k, limit=4) or []:
+                    out.append({"provider": "steam", "external_id": c["external_id"],
+                                "title": c.get("title"), "title_orig": c.get("title_orig"),
+                                "maker": c.get("maker"), "released": c.get("released"),
+                                "rating": c.get("rating"), "cover_url": c.get("cover_url"),
+                                "summary": (c.get("summary") or "")[:200],
+                                "tags": c.get("tags", [])[:8]})
+            except Exception:
+                pass
+            if out:
+                break  # 展开的第一个有结果的关键词即可（与管家搜索策略一致）
+        seen, dedup = set(), []
+        for c in out:
+            key = (c["provider"], c["external_id"])
+            if key not in seen:
+                seen.add(key)
+                dedup.append(c)
+        return {"ok": True, "candidates": dedup[:12]}
+
+    def add_game_manual(self, fields):
+        """手动创建游戏条目（status=2 已入库）。title 必填；带 http cover_url 时后台下载封面。"""
+        fields = fields or {}
+        title = (fields.get("title") or "").strip()
+        if not title:
+            return {"ok": False, "error": "标题不能为空"}
+        dup = self._db.query_one(
+            "SELECT id, title FROM games WHERE title=? COLLATE NOCASE", (title,))
+        if dup:
+            return {"ok": False,
+                    "error": f"库中已有《{dup['title']}》（id={dup['id']}），请勿重复导入，可直接在详情页修正"}
+        rating = fields.get("rating")
+        if isinstance(rating, (int, float)) and rating > 20:
+            rating = round(rating / 10, 1)  # VNDB 0-100 → 10 分制
+        now = now_iso()
+        # 制作组名自动锚定（中/英/日文写法统一到规范名）
+        from . import makers
+        maker = makers.canonical(self._db, fields.get("maker") or "")
+        gid = self._db.execute(
+            """INSERT INTO games (title, title_jp, title_en, title_zh, maker, brand, released,
+                                  rating, length_minutes, length_level, description,
+                                  vndb_id, bgm_id, steam_id, path, exe_path, cover_url,
+                                  status, source, added_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,2,'manual',?)""",
+            (title, (fields.get("title_jp") or "").strip(),
+             (fields.get("title_en") or "").strip(), (fields.get("title_zh") or "").strip(),
+             maker, (fields.get("brand") or "").strip(),
+             (fields.get("released") or "").strip(), rating,
+             fields.get("length_minutes"), fields.get("length_level"),
+             (fields.get("description") or "").strip()[:3000],
+             (fields.get("vndb_id") or "").strip(),
+             fields.get("bgm_id"), str(fields.get("steam_id") or "").strip(),
+             (fields.get("path") or "").strip(),
+             (fields.get("exe_path") or "").strip(),
+             (fields.get("cover_url") or "").strip(), now))
+        tags = [str(t).strip() for t in (fields.get("tags") or []) if str(t).strip()]
+        if tags:
+            for t in tags:
+                self._db.execute(
+                    "INSERT OR IGNORE INTO tags (name, category) VALUES (?, 'manual')", (t,))
+                tid = self._db.query_one("SELECT id FROM tags WHERE name=?", (t,))["id"]
+                self._db.execute(
+                    "INSERT OR IGNORE INTO game_tags (game_id, tag_id, source) VALUES (?,?, 'manual')",
+                    (gid, tid))
+        url = (fields.get("cover_url") or "").strip()
+        if url.startswith("http"):
+            threading.Thread(target=self._download_cover_bg, args=(gid, url), daemon=True).start()
+        return {"ok": True, "id": gid, "game": self.get_game(gid)}
+
+    def _download_cover_bg(self, gid, url):
+        """后台下载封面（不阻塞导入流程；失败静默，可之后手动补）。"""
+        try:
+            self.set_cover_url(gid, url)
+        except Exception:
+            pass
+
+    # ---------- 本地导入：exe/文件夹 + 备注 → AI 提取 → 匹配 → 录入 ----------
+    def pick_game_path(self, kind="exe"):
+        """弹系统对话框选择本地游戏 exe 或文件夹（导入用）。"""
+        import webview
+        win = getattr(self, "_window", None)
+        if not win:
+            return {"ok": False, "error": "窗口未就绪"}
+        try:
+            if kind == "folder":
+                result = win.create_file_dialog(webview.FOLDER_DIALOG)
+            else:
+                result = win.create_file_dialog(file_types=("程序 (*.exe)",))
+        except Exception as e:
+            return {"ok": False, "error": f"文件对话框失败: {e}"}
+        if not result:
+            return {"ok": False, "error": "未选择文件"}
+        p = os.path.abspath(result[0])
+        if kind == "exe":
+            folder = os.path.dirname(p)
+            title = os.path.basename(folder) or os.path.splitext(os.path.basename(p))[0]
+        else:
+            folder = p
+            title = os.path.basename(p.rstrip("\\/"))
+        return {"ok": True, "path": p, "folder": folder, "title": title}
+
+    def _extract_game_info(self, folder_name, note, parent_dir=""):
+        """LLM 从 文件夹名+上级目录(厂商线索)+备注 提取结构化信息（标题/厂商/年份/标签/简介）。"""
+        from .providers import llm
+        system = ("你是 Galgame 资料整理助手。根据用户提供的游戏文件夹名和简短备注，"
+                  "提取结构化信息。只输出 JSON {\"title\":\"游戏名\",\"maker\":\"厂商（不知道就空字符串）\","
+                  "\"year\":\"YYYY（不知道就空字符串）\",\"tags\":[\"类型标签，如 纯爱/拔作/悬疑\"],"
+                  "\"description\":\"一句话中文简介\"}。title 优先用玩家常用名"
+                  "（备注里提到的名字优先于文件夹名）。")
+        user = f"文件夹名: {folder_name}\n备注: {note or '(无)'}"
+        if parent_dir:
+            # 两层目录结构 GalGame/厂商/作品名：上级目录通常是厂商，作为强线索
+            user += f"\n上级目录名（通常是制作公司/品牌，请据此确认 maker）: {parent_dir}"
+        try:
+            result, err = llm.chat_json(self._cfg, system, user, timeout=45)
+            if result:
+                return {
+                    "title": (result.get("title") or "").strip(),
+                    "maker": (result.get("maker") or "").strip(),
+                    "year": (result.get("year") or "").strip()[:4],
+                    "tags": [str(t).strip() for t in (result.get("tags") or [])
+                             if str(t).strip()][:8],
+                    "description": (result.get("description") or "").strip()[:500],
+                }
+        except Exception:
+            pass
+        return {"title": "", "maker": "", "year": "", "tags": [], "description": ""}
+
+    @staticmethod
+    def _pick_best_candidate(cands, title, maker):
+        """从候选里选最佳：标题精确 > 标题包含 > 厂商匹配 > 第一个。"""
+        tl = (title or "").lower()
+        ml = (maker or "").lower()
+        for c in cands:
+            if (c.get("title") or "").lower() == tl:
+                return c
+        for c in cands:
+            if tl and tl in (c.get("title") or "").lower():
+                return c
+        if ml:
+            for c in cands:
+                if ml in str(c.get("maker") or "").lower():
+                    return c
+        return cands[0]
+
+    def import_local_game(self, fields):
+        """本地导入主流程：选好的 exe/文件夹 + 简短备注 →
+        LLM 提取信息 → 搜外部候选 → 选最佳建条目 → 后台补全资料/封面/中文名。
+        返回备选列表，前端可「换用」其他候选资料（reimport_game_source）。"""
+        fields = fields or {}
+        exe_path = (fields.get("exe_path") or "").strip()
+        folder = (fields.get("folder") or "").strip()
+        note = (fields.get("note") or "").strip()
+        if not folder and exe_path:
+            folder = os.path.dirname(exe_path)
+        if not folder:
+            return {"ok": False, "error": "请先选择游戏 exe 或文件夹"}
+        if not os.path.isdir(folder):
+            return {"ok": False, "error": f"目录不存在: {folder}"}
+        folder_name = os.path.basename(folder.rstrip("\\/")) or folder
+        # 两层目录结构 GalGame/厂商/作品名：上级目录名作厂商线索
+        parent_dir = os.path.basename(os.path.dirname(folder.rstrip("\\/"))) or ""
+        if parent_dir and os.path.normpath(os.path.dirname(folder.rstrip("\\/"))) == os.path.normpath(folder):
+            parent_dir = ""
+        # 1) AI 提取
+        info = self._extract_game_info(folder_name, note, parent_dir)
+        title = (info.get("title") or "").strip() or folder_name
+        # 2) 搜候选
+        cands = []
+        try:
+            r = self.search_candidates(title)
+            cands = (r.get("candidates") or []) if r.get("ok") else []
+        except Exception:
+            cands = []
+        # 3) 选最佳
+        best = self._pick_best_candidate(cands, title, info.get("maker") or "") if cands else None
+        # 4) 建条目（用户给的路径/信息优先，候选补齐其余）
+        base = {
+            "title": title, "maker": info.get("maker"), "released": info.get("year"),
+            "tags": info.get("tags") or [], "description": info.get("description") or note,
+            "path": folder, "exe_path": exe_path or None, "workdir": folder,
+        }
+        if best:
+            merged = dict(best)
+            merged.update({k: v for k, v in base.items() if v})  # 用户信息覆盖候选
+            r2 = self.import_game_candidate(merged)
+        else:
+            r2 = self.add_game_manual(base)
+        if not r2.get("ok"):
+            return r2
+        # 确保 path/exe/workdir 落库（候选导入路径也可能没带）
+        if folder or exe_path:
+            self._db.execute(
+                "UPDATE games SET path=?, exe_path=?, workdir=? WHERE id=?",
+                (folder or None, exe_path or None, folder or None, r2["id"]))
+        alternates = [c for c in cands if c is not best][:5]
+        return {"ok": True, "id": r2["id"], "title": title,
+                "matched": (best or {}).get("title") or "",
+                "provider": (best or {}).get("provider") or "manual",
+                "alternates": alternates}
+
+    def reimport_game_source(self, game_id, candidate):
+        """导入后用备选候选的资料覆盖该条目（换来源/换资料）。"""
+        gid = int(game_id)
+        if not self._db.query_one("SELECT id FROM games WHERE id=?", (gid,)):
+            return {"ok": False, "error": "游戏不存在"}
+        cand = candidate or {}
+        provider = (cand.get("provider") or "").lower()
+        ext_id = str(cand.get("external_id") or cand.get("id") or "").strip()
+        rating = cand.get("rating")
+        if isinstance(rating, (int, float)) and rating > 20:
+            rating = round(rating / 10, 1)
+        upd = {"title": (cand.get("title") or "").strip()[:200],
+               "title_jp": (cand.get("title_orig") or "").strip()[:200],
+               "maker": (cand.get("maker") or "").strip()[:100],
+               "released": (cand.get("released") or "").strip()[:10],
+               "rating": rating,
+               "description": (cand.get("summary") or "").strip()[:3000]}
+        if provider == "vndb":
+            upd["vndb_id"] = ext_id
+        elif provider == "bgm":
+            upd["bgm_id"] = ext_id
+        elif provider == "steam":
+            upd["steam_id"] = ext_id
+        upd = {k: v for k, v in upd.items() if v is not None}
+        # 制作组名自动锚定：换资料时也统一写法
+        if upd.get("maker"):
+            from . import makers
+            upd["maker"] = makers.canonical(self._db, upd["maker"])
+        if upd:
+            set_sql = ", ".join(f"{k}=?" for k in upd)
+            self._db.execute(f"UPDATE games SET {set_sql} WHERE id=?", (*upd.values(), gid))
+        url = (cand.get("cover_url") or "").strip()
+        if url.startswith("http"):
+            threading.Thread(target=self._download_cover_bg, args=(gid, url), daemon=True).start()
+        vndb_id = upd.get("vndb_id") or ""
+        threading.Thread(target=self._enrich_imported, args=(gid, vndb_id), daemon=True).start()
+        return {"ok": True, "id": gid}
+
+    def import_game_candidate(self, candidate):
+        """导入一个外部候选（VNDB/BGM 搜索结果）：建条目 → 后台拉全量资料 + AI 翻译中文名/简介。"""
+        cand = candidate or {}
+        provider = (cand.get("provider") or "").lower()
+        ext_id = str(cand.get("external_id") or cand.get("id") or "").strip()
+        title = (cand.get("title") or "").strip()
+        if not title:
+            return {"ok": False, "error": "候选缺少标题"}
+        if ext_id:
+            col = {"vndb": "vndb_id", "bgm": "bgm_id", "steam": "steam_id"}.get(provider)
+            if col:
+                dup = self._db.query_one(f"SELECT id, title FROM games WHERE {col}=?", (ext_id,))
+                if dup:
+                    return {"ok": False,
+                            "error": f"库中已有《{dup['title']}》（id={dup['id']}），无需重复导入"}
+        fields = {
+            "title": title,
+            "title_jp": cand.get("title_orig"),
+            "maker": cand.get("maker"),
+            "released": cand.get("released"),
+            "rating": cand.get("rating"),
+            "length_minutes": cand.get("length_minutes"),
+            "length_level": cand.get("length_level"),
+            "description": cand.get("summary"),
+            "cover_url": cand.get("cover_url"),
+            "tags": cand.get("tags"),
+        }
+        if provider == "vndb":
+            fields["vndb_id"] = ext_id
+        elif provider == "bgm":
+            fields["bgm_id"] = ext_id
+        elif provider == "steam":
+            fields["steam_id"] = ext_id
+        r = self.add_game_manual(fields)
+        if r.get("ok"):
+            # AI 补全：后台拉 VNDB 全量详情（更全简介/时长/别名）+ 中文标题/简介翻译
+            threading.Thread(target=self._enrich_imported,
+                             args=(r["id"], fields.get("vndb_id") or ""), daemon=True).start()
+        return r
+
+    def _enrich_imported(self, gid, vndb_id):
+        """导入后补全：VNDB 全量详情 + AI 翻译中文名/简介，写入 games。"""
+        try:
+            from .providers import llm, vndb
+            game = self._db.query_one("SELECT * FROM games WHERE id=?", (gid,))
+            if not game:
+                return
+            cand, err = (vndb.get(self._cfg, vndb_id), None) if vndb_id else (None, None)
+            upd = {}
+            if cand:
+                if cand.get("length_minutes") and not game.get("length_minutes"):
+                    upd["length_minutes"] = cand["length_minutes"]
+                if cand.get("length_level") and not game.get("length_level"):
+                    upd["length_level"] = cand["length_level"]
+                desc = (cand.get("description") or "").strip()[:3000]
+                if len(desc) > len(game.get("description") or ""):
+                    upd["description"] = desc
+            if upd:
+                set_sql = ", ".join(f"{k}=?" for k in upd)
+                self._db.execute(f"UPDATE games SET {set_sql} WHERE id=?", (*upd.values(), gid))
+            # AI 中文翻译：标题 + 简介
+            if not (game.get("title_zh") or "").strip() and (game.get("title") or "").strip():
+                system = ("你是 Galgame 中文本地化翻译。把作品标题翻译成简体中文（用玩家常用译名，"
+                          "如 Summer Pockets→夏日口袋；没有通用译名就直译），简介翻译成通顺简体中文。"
+                          "只输出 JSON {\"zh_title\":\"...\",\"zh_summary\":\"...\"}")
+                user = f"标题: {game.get('title')}\n日文名: {game.get('title_jp') or ''}\n简介:\n{(game.get('description') or '')[:1200]}"
+                result, terr = llm.chat_json(self._cfg, system, user, timeout=60)
+                if result:
+                    zh_t = (result.get("zh_title") or "").strip()[:200]
+                    zh_s = (result.get("zh_summary") or "").strip()[:3000]
+                    if zh_t:
+                        self._db.execute("UPDATE games SET title_zh=? WHERE id=?", (zh_t, gid))
+                    if zh_s:
+                        self._db.execute("UPDATE games SET description=? WHERE id=?", (zh_s, gid))
+        except Exception as e:
+            logging.error("导入补全(%s) 失败: %s", gid, e)
 
     # ---------- 封面维护 ----------
     def refresh_cover(self, game_id):
@@ -725,10 +1299,11 @@ class JsApi:
     # ---------- 厂商墙 / 新作推荐 / 作品详情 ----------
     @staticmethod
     def _maker_key(name):
-        """厂商归一化键：小写 + 去括号后缀（Miel (ミエル) → miel），用于合并同名异写。"""
-        import re
-        s = re.sub(r"[（(].*?[)）]", "", name).lower()
-        return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", s)
+        """厂商归一化键：假名→罗马音 + 小写去符号（Miel/ミエル/miel → 同一键），
+        用于统计页/厂商墙的近似名合并。纯汉字名回退汉字键。"""
+        from . import makers
+        _, roma, hanzi = makers.keys_of(name)
+        return roma or hanzi
 
     def get_makers_wall(self):
         """厂商墙：本地库聚合的厂商列表（本地游戏数 + 代表作封面），近似名自动合并。"""
@@ -975,12 +1550,13 @@ class JsApi:
             # 实时应用最新中文标签 + 中文标题（后台翻译可能刚完成）
             self._apply_zh(result.get("works", []))
             return result
-        # 1) 记忆命中 → 直接用 vndb_id
+        # 1) 记忆命中 → 直接用 vndb_id（显示名回退本地名，避免空/旧名误导）
         memo = self._db.query_one(
             "SELECT vndb_id, display_name FROM producer_map WHERE maker_name=?", (key,))
         prod = None
         if memo and memo["vndb_id"]:
-            prod = {"id": memo["vndb_id"], "name": memo["display_name"],
+            prod = {"id": memo["vndb_id"],
+                    "name": (memo["display_name"] or "").strip() or key,
                     "aliases": [], "description": "", "type": ""}
         # 2) 否则展开搜索（智能匹配，不再粗暴整串丢进去）
         if not prod:
@@ -994,6 +1570,9 @@ class JsApi:
         if not prod:
             return {"ok": False, "error": f"VNDB 没找到厂商「{key}」",
                     "not_found": True, "maker": key}
+        # 把 VNDB 官方别名（常含中/英/日写法）登记进锚定表 → 之后任何写法都归一到同一厂商
+        from . import makers
+        makers.register_aliases(self._db, key, prod.get("aliases") or [], "vndb")
         works, werr = vndb.get_producer_vns(self._cfg, prod["id"])
         if werr:
             return {"ok": False, "error": werr}
@@ -1016,18 +1595,48 @@ class JsApi:
         if err:
             return {"ok": False, "error": err}
         return {"ok": True, "candidates": cands}
-
     def set_maker_mapping(self, maker_name, vndb_id, display_name=""):
-        """用户手动指定 本地厂商名 → VNDB producer，写记忆表并清缓存。"""
+        """用户手动指定 本地厂商名 → VNDB producer，写记忆表并清缓存。
+        同时更新锚定表 makers/maker_aliases，让该写法成为规范名（或别名）。"""
+        from . import makers
         maker = (maker_name or "").strip()
         vid = (vndb_id or "").strip()
         if not maker or not vid:
             return {"ok": False, "error": "参数不完整"}
+        # 手动更正时显示名默认用本地厂商名（用户认知一致：更正成什么就显示什么），
+        # 前端也可显式传 VNDB 官方名；空值一律回退本地名，避免空白显示。
+        disp = (display_name or "").strip() or maker
         self._db.execute(
             "INSERT OR REPLACE INTO producer_map (maker_name, vndb_id, display_name, updated_at)"
-            " VALUES (?,?,?,?)", (maker, vid, (display_name or vid), now_iso()))
+            " VALUES (?,?,?,?)", (maker, vid, disp, now_iso()))
+        # 锚定：把用户确认的写法登记为规范名/别名（下次任何来源写这个厂商都会归一到 disp）
+        if disp and not makers.is_blank(disp):
+            if makers.canonical(self._db, disp, vid) != disp:
+                pass  # canonical 已存在同名 → 已统一
+            _reg = self._db.query_one(
+                "SELECT m.* FROM maker_aliases a JOIN makers m ON m.id=a.maker_id"
+                " WHERE a.alias=?", (maker,))
+            if _reg and _reg["name"] != disp:
+                makers._rename(self._db, _reg["id"], disp)
         _maker_cache.pop(maker, None)
-        return {"ok": True}
+        _maker_cache.pop(disp, None)
+        return {"ok": True, "display_name": disp, "vndb_id": vid}
+
+    def list_makers(self):
+        """全部规范厂商（合并 UI 用）：游戏数 + 别名 + vndb_id，按游戏数降序。"""
+        from . import makers
+        return {"ok": True, "makers": makers.list_makers(self._db)}
+
+    def merge_makers(self, src, dst):
+        """手动合并厂商：src 的所有游戏/关注/别名并入 dst（dst 不存在则新建）。
+        返回合并后的规范名；前端随后刷新库列表/厂商墙。"""
+        from . import makers
+        ok, canon, err = makers.merge_makers(self._db, src, dst)
+        if not ok:
+            return {"ok": False, "error": err}
+        _maker_cache.pop(src, None)
+        _maker_cache.pop(canon, None)
+        return {"ok": True, "canonical": canon}
 
     def translate_tags_async(self, tags):
         """批量翻译标签为中文（缺失的才译），结果落 tag_cache。单槽后台任务。"""

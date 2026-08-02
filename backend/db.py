@@ -85,6 +85,18 @@ CREATE TABLE IF NOT EXISTS producer_map (
     vndb_id TEXT, display_name TEXT,
     updated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS makers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE,            -- 锚定后的规范名（唯一展示名）
+    vndb_id TEXT,                -- 该厂商的 VNDB producer id（用于关联外部资料）
+    updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS maker_aliases (
+    alias TEXT PRIMARY KEY,      -- 一种写法（中/英/日文变体）
+    maker_id INTEGER,            -- → makers.id
+    source TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_maker_aliases_maker ON maker_aliases(maker_id);
 CREATE TABLE IF NOT EXISTS tag_cache (
     en_name TEXT PRIMARY KEY,
     zh_name TEXT
@@ -133,6 +145,10 @@ class Database:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(games)")}
         if "favorite" not in cols:
             conn.execute("ALTER TABLE games ADD COLUMN favorite INTEGER DEFAULT 0")
+        if "steam_id" not in cols:
+            conn.execute("ALTER TABLE games ADD COLUMN steam_id TEXT")
+        if "cover_orig_path" not in cols:
+            conn.execute("ALTER TABLE games ADD COLUMN cover_orig_path TEXT")
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(match_cache)")}
         if "provider" not in cols:
             conn.execute("ALTER TABLE match_cache ADD COLUMN provider TEXT DEFAULT 'vndb'")

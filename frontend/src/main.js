@@ -18,6 +18,24 @@ window.addEventListener('unhandledrejection', (e) => {
 })
 
 const app = createApp(App)
+
+// 全局图片加载失败降级：远程封面失败/挂起时隐藏 img，插入占位块（防破图/空白）
+app.directive('imgfb', {
+  mounted(el, binding) {
+    el.addEventListener('error', () => {
+      try {
+        if (el._imgfbDone) return
+        el._imgfbDone = true
+        el.style.display = 'none'
+        const ph = document.createElement('div')
+        ph.className = 'img-fb'
+        ph.textContent = binding.value || ''
+        if (el.parentNode) el.parentNode.insertBefore(ph, el.nextSibling)
+      } catch (e) { /* 占位失败不致命 */ }
+    })
+  },
+})
+
 app.use(createPinia())
 // Vue 渲染/生命周期错误（onerror 抓不到）→ 上报日志 + 全局横幅
 app.config.errorHandler = (err, _instance, info) => {

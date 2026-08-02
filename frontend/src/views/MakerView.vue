@@ -16,6 +16,9 @@
         <button v-if="store.maker.mode === 'maker' && store.maker.profile" class="btn small" @click="openFixer">
           🔧 更正厂商
         </button>
+        <button v-if="store.maker.mode === 'maker'" class="btn small" @click="openMerge" title="把此厂商并入另一个写法（中/英/日名统一）">
+          🔗 合并厂商
+        </button>
         <button class="btn small" :disabled="!prevMaker" @click="goMaker(prevMaker)" title="上一个厂商">‹ 上一个</button>
         <button class="btn small" :disabled="!nextMaker" @click="goMaker(nextMaker)" title="下一个厂商">下一个 ›</button>
         <button class="btn small" @click="store.currentView = 'makers'">🏭 厂商墙</button>
@@ -87,7 +90,18 @@
             <span v-else class="mk-notowned-badge">未拥有</span>
           </div>
           <div class="mk-info">
-            <div class="mk-title" :title="w.zh_title || w.title">{{ w.zh_title || w.title }}</div>
+            <div class="mk-title-row">
+              <div class="mk-title" :title="w.zh_title || w.title">{{ w.zh_title || w.title }}</div>
+              <button
+                v-if="!w.zh_title"
+                class="mk-tr-btn"
+                :class="{ busy: store.workTranslating }"
+                :disabled="store.workTranslating"
+                title="翻译为中文标题"
+                @click.stop="store.translateWork(w)"
+              >{{ store.workTranslating ? '…' : '译' }}</button>
+              <span v-else class="mk-tr-done" title="已有中文标题">✓</span>
+            </div>
             <div v-if="w.title_jp" class="mk-title-jp" :title="w.title_jp">{{ w.title_jp }}</div>
             <div class="mk-meta">
               <span>{{ w.released || '未知日期' }}</span>
@@ -120,7 +134,8 @@
         <button class="wd-close" @click="fixerOpen = false">✕</button>
         <h2 class="fixer-title">🔧 更正厂商「{{ store.maker.key }}」</h2>
         <p class="dim" style="font-size: 12px; margin-bottom: 10px">
-          当前 VNDB 匹配：<b>{{ profile?.producer?.name }}（{{ profile?.producer?.id }}）</b>。搜索正确的厂商并选择，之后会自动记住。
+          本地厂商「<b>{{ store.maker.key }}</b>」→ VNDB：<b>{{ profile?.producer?.name || '?' }}（{{ profile?.producer?.id }}）</b>。
+          搜索正确的厂商并选择，之后会自动记住（显示为本地名）。
         </p>
         <div class="fixer-search">
           <input
@@ -148,6 +163,36 @@
         <p v-if="fixerDone" class="fixer-done">✅ 已更新并记住映射，正在刷新…</p>
       </div>
     </div>
+
+    <!-- 合并厂商弹层：把当前写法并入目标写法（中/英/日名统一） -->
+    <div v-if="mergeOpen" class="wd-overlay" @click.self="mergeOpen = false">
+      <div class="wd-panel fixer-panel">
+        <button class="wd-close" @click="mergeOpen = false">✕</button>
+        <h2 class="fixer-title">🔗 合并厂商</h2>
+        <p class="dim" style="font-size: 12px; margin-bottom: 10px">
+          把「<b>{{ store.maker.key }}</b>」并入目标写法（其所有游戏/关注/别名统一为目标名）。
+          目标不存在则作为新规范名（等于改名）。
+        </p>
+        <input
+          v-model="mergeTarget"
+          class="chat-input"
+          list="merge-maker-list"
+          placeholder="输入目标厂商名（可从下拉选库内已有写法）…"
+          @keyup.enter="doMerge"
+        />
+        <datalist id="merge-maker-list">
+          <option v-for="m in allMakers" :key="m.name" :value="m.name">
+            {{ m.name }}（{{ m.count }} 部{{ m.aliases && m.aliases.length ? ' · ' + m.aliases.slice(0, 3).join('/') : '' }}）
+          </option>
+        </datalist>
+        <div v-if="mergeMsg" class="fixer-done" :class="{ err: mergeErr }">{{ mergeMsg }}</div>
+        <div class="fixer-search" style="margin-top: 12px">
+          <button class="btn primary" :disabled="merging || !mergeTarget.trim()" @click="doMerge">
+            {{ merging ? '合并中…' : '✓ 确认合并' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -170,6 +215,61 @@ const fixerKw = ref('')
 const fixerCands = ref([])
 const searching = ref(false)
 const fixerDone = ref(false)
+
+// 合并厂商
+const mergeOpen = ref(false)
+const mergeTarget = ref('')
+const merging = ref(false)
+const mergeMsg = ref('')
+const mergeErr = ref(false)
+const allMakers = ref([])
+
+async function openMerge() {
+  mergeOpen.value = true
+  mergeTarget.value = ''
+  mergeMsg.value = ''
+  mergeErr.value = false
+  try {
+    const r = await api.listMakers()
+    if (r && r.ok) allMakers.value = r.makers || []
+  } catch (e) {
+    allMakers.value = []
+  }
+}
+
+async function doMerge() {
+  const src = store.maker.key
+  const dst = mergeTarget.value.trim()
+  if (!src || !dst || merging.value) return
+  if (src === dst) {
+    mergeMsg.value = '来源与目标相同，无需合并'
+    mergeErr.value = true
+    return
+  }
+  merging.value = true
+  mergeMsg.value = ''
+  try {
+    const r = await api.mergeMakers(src, dst)
+    if (r && r.ok) {
+      mergeMsg.value = `✅ 已合并「${src}」→「${r.canonical}」，正在刷新…`
+      mergeErr.value = false
+      setTimeout(() => {
+        mergeOpen.value = false
+        // 刷新库 + 打开目标厂商档案（若目标没 VNDB 资料也能看本地列表）
+        store.load()
+        store.openMaker(r.canonical)
+      }, 800)
+    } else {
+      mergeMsg.value = (r && r.error) || '合并失败'
+      mergeErr.value = true
+    }
+  } catch (e) {
+    mergeMsg.value = e.message || '合并失败（超时或网络异常）'
+    mergeErr.value = true
+  } finally {
+    merging.value = false
+  }
+}
 
 const profileTitle = computed(() => {
   const p = profile.value
@@ -222,7 +322,8 @@ function openWork(w) {
   if (w.local_id) {
     store.openGame(w.local_id)
   } else if (w.id) {
-    store.openWorkDetail(w.id)
+    // 传入卡片已有数据 → 弹层秒开，后台再拉全量详情合并（防“点开没图片的作品卡死”）
+    store.openWorkDetail(w.id, w)
   }
 }
 
@@ -270,7 +371,8 @@ async function doSearch() {
 }
 
 async function applyMapping(c) {
-  const r = await api.setMakerMapping(store.maker.key, c.id, c.name)
+  // 显示名用本地厂商名：用户更正成什么，界面就显示什么（VNDB 官方名见候选别名）
+  const r = await api.setMakerMapping(store.maker.key, c.id, store.maker.key)
   if (r && r.ok) {
     fixerDone.value = true
     setTimeout(async () => {

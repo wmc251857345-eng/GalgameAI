@@ -6,8 +6,9 @@
     </div>
     <div class="spacer"></div>
     <select v-model="sort" class="sort">
-      <option value="title">按名称</option>
-      <option value="year">发售年份</option>
+      <option value="company">按公司</option>
+      <option value="year">发售时间</option>
+      <option value="title">标题首字</option>
       <option value="playtime">游玩时长</option>
       <option value="score">评分</option>
       <option value="favorite">收藏优先</option>

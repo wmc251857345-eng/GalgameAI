@@ -32,6 +32,9 @@ export const apiReady = () => {
       const iv = setInterval(() => {
         if (hasBridge()) finish(true)
         else if (Date.now() - t0 > 8000) finish(false)
+        // 纯浏览器预览/冒烟：pywebview 对象从未注入 → 2s 后直接降级 mock，
+        // 不必干等 8s（生产环境 pywebview 对象在页面加载早期就存在，不受影响）
+        else if (!window.pywebview && Date.now() - t0 > 2000) finish(false)
       }, 100)
       window.addEventListener('pywebviewready', onReady)
     })
@@ -108,6 +111,19 @@ export const api = {
       confirmed: MOCK_GAMES.filter((g) => g.status === 2).length,
       playtime_hours: Math.round(MOCK_GAMES.reduce((s, g) => s + g.playtime_hours, 0) * 10) / 10,
       makers: new Set(MOCK_GAMES.map((g) => g.maker)).size,
+    }
+  },
+
+  async getStats() {
+    if (hasBridge()) return window.pywebview.api.get_stats()
+    await delay()
+    return {
+      overview: { total: 8, confirmed: 6, pending: 2, skipped: 0, favorites: 1, hanhua: 3, playtime_hours: 168.4, played_count: 5, total_size_gb: 45.2 },
+      makers: [{ name: 'Yuzusoft', count: 2, avg_rating: 8.8, playtime_hours: 30.5 }],
+      tags: [{ name: '纯爱', count: 3 }, { name: '催泪', count: 2 }],
+      years: [{ year: '2018', count: 2 }, { year: '2016', count: 1 }],
+      top_played: [{ id: 1, title: '千恋万花', hours: 30.5, last_played: '2026-07-01' }],
+      sources: { vndb: 4, ai: 3, manual: 1 },
     }
   },
 
@@ -246,10 +262,88 @@ export const api = {
     return { ok: true }
   },
 
+  // 封面裁剪（x/y/w/h 为原图 0~1 小数比例）与重置自动适配
+  async setCoverCrop(id, x, y, w, h) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.set_cover_crop(id, x, y, w, h), 30000, '封面裁剪')
+    }
+    await delay()
+    return { ok: false, error: '浏览器预览模式无法裁剪' }
+  },
+
+  async clearCoverCrop(id) {
+    if (hasBridge()) return window.pywebview.api.clear_cover_crop(id)
+    await delay()
+    return { ok: true }
+  },
+
+  // 制作组锚定：全部规范厂商 + 手动合并
+  async listMakers() {
+    if (hasBridge()) return window.pywebview.api.list_makers()
+    await delay()
+    return { ok: true, makers: [] }
+  },
+
+  async mergeMakers(src, dst) {
+    if (hasBridge()) return window.pywebview.api.merge_makers(src, dst)
+    await delay()
+    return { ok: true, canonical: dst }
+  },
+
   async removeGame(id) {
     if (hasBridge()) return window.pywebview.api.remove_game(id)
     await delay()
     return { ok: true }
+  },
+
+  // 手动导入 / AI 补全
+  async searchCandidates(keyword) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.search_candidates(keyword), 30000, '候选搜索')
+    }
+    await delay()
+    return { ok: true, candidates: [] }
+  },
+
+  async importGameCandidate(candidate) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.import_game_candidate(candidate), 20000, '导入')
+    }
+    await delay()
+    return { ok: true, id: 999 }
+  },
+
+  async addGameManual(fields) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.add_game_manual(fields), 20000, '创建条目')
+    }
+    await delay()
+    return { ok: true, id: 999 }
+  },
+
+  // 本地导入：选文件 + 备注 → AI 补全
+  async pickGamePath(kind) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.pick_game_path(kind), 30000, '文件选择')
+    }
+    await delay()
+    return { ok: false, error: '浏览器预览模式无法弹文件对话框' }
+  },
+
+  async importLocalGame(fields) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.import_local_game(fields), 90000, 'AI 补全录入')
+    }
+    await delay(600)
+    return { ok: true, id: 999, title: '(mock)', matched: '', provider: 'manual', alternates: [] }
+  },
+
+  async reimportGameSource(id, candidate) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.reimport_game_source(id, candidate), 20000, '换用资料')
+    }
+    await delay()
+    return { ok: true, id }
   },
 
   // 封面 / 维护
@@ -398,6 +492,11 @@ export const api = {
   async translateWorkAsync(vndbId) {
     if (hasBridge()) return window.pywebview.api.translate_work_async(vndbId)
     return { ok: true }
+  },
+
+  async translateWorks(works) {
+    if (hasBridge()) return window.pywebview.api.translate_works_async(works)
+    return { ok: true, translated: 0 }
   },
 
   async getTranslateStatus() {

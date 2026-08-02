@@ -19,6 +19,8 @@ SYSTEM_PROMPT = """你是 GALA（Galgame AI Library Agent）的 AI 管家，负�
 6. 用户没指定游戏时，可以问一句是哪个游戏，或先用 search_games 缩小范围。
 7. 回答里的所有数字（数量/时长/年份/评分）必须严格与工具返回一致，禁止编造或脑补。
 8. 工具信息足够后就立刻回答，不要重复调用同一个工具；每轮最多连续调用 2~3 个工具。
+9. 制作组名已自动锚定：同一厂商的中/英/日文写法会归一到一个规范名。用户说“XX和XX是同一个社/合并/统一叫法”时，先调 list_makers 找到对应写法，再用 merge_makers 合并；用户让改名时，用 merge_makers 把旧名并入新名。
+10. 外部资料搜索会同时查 VNDB / Bangumi / Steam 三个渠道（Steam 上很多 VNDB 没记录的厂商）。
 """
 
 TOOLS = [
@@ -98,6 +100,25 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "id": {"type": "integer"},
         }, "required": ["id"]}}},
+    {"type": "function", "function": {
+        "name": "import_game",
+        "description": "把用户提供的新游戏导入本地库：先用用户给的名字搜索外部资料（VNDB/Bangumi/Steam），找到就用候选资料建条目并后台补全（简介/封面/中文名）；找不到就按用户提供的字段建占位条目。导入前先确认库里没有同名/同源条目。",
+        "parameters": {"type": "object", "properties": {
+            "title": {"type": "string", "description": "游戏名称（必填，用户怎么叫就怎么填）"},
+            "maker": {"type": "string", "description": "厂商/社团（用户提供了才填，可空）"},
+            "year": {"type": "string", "description": "发售年份 YYYY（用户提供了才填，可空）"},
+        }, "required": ["title"]}}},
+    {"type": "function", "function": {
+        "name": "list_makers",
+        "description": "列出本地库全部制作组的规范名（含游戏数、别名写法、vndb_id），用于发现同一厂商的中/英/日文重复写法",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "merge_makers",
+        "description": "把两个制作组合并为一个：src 的所有游戏/关注/别名并入 dst。用户说“XX和XX是一个社/合并/改成同一个名字”时用。dst 可以是全新写法（会把 src 改名成 dst）。",
+        "parameters": {"type": "object", "properties": {
+            "src": {"type": "string", "description": "来源厂商名（被合并掉的写法）"},
+            "dst": {"type": "string", "description": "目标厂商名（合并后保留的规范名）"},
+        }, "required": ["src", "dst"]}}},
 ]
 
 
@@ -109,6 +130,10 @@ class AgentService:
         self._cfg = cfg
         self._js = None
         self._prov_cache = {}  # keyword -> (ts, results)，TTL 5 分钟，省请求+防限速
+        # 关键：_TOOL_FN 是类属性，存的是【未绑定函数】（签名 self, args）。
+        # 必须在此绑定成实例方法，否则 fn(args) 会把 args 当 self 传入 →
+        # TypeError: missing 1 required positional argument: 'args'（AI 管家“工具用不了”bug）
+        self._tool_fns = {name: getattr(self, fn.__name__) for name, fn in self._TOOL_FN.items()}
 
     @property
     def _api(self):
@@ -207,8 +232,8 @@ class AgentService:
         return {"tags": tags, "makers": makers}
 
     def _search_provider_kw(self, kw):
-        """单关键词搜 vndb+bgm（带 TTL 缓存）。"""
-        from .providers import bgm, vndb
+        """单关键词搜 vndb+bgm+steam（带 TTL 缓存）。"""
+        from .providers import bgm, steam, vndb
         import time as _t
         hit = self._prov_cache.get(kw)
         if hit and _t.time() - hit[0] < 300:
@@ -227,6 +252,15 @@ class AgentService:
         try:
             for c in bgm.search(self._cfg, kw, limit=3):
                 out.append({"provider": "bgm", "id": c["external_id"],
+                            "title": c.get("title"), "title_jp": c.get("title_orig"),
+                            "maker": c.get("maker"), "released": c.get("released"),
+                            "cover_url": c.get("cover_url"), "tags": c.get("tags", [])[:6],
+                            "summary": (c.get("summary") or "")[:150]})
+        except Exception:
+            pass
+        try:
+            for c in steam.search(self._cfg, kw, limit=3):
+                out.append({"provider": "steam", "id": c["external_id"],
                             "title": c.get("title"), "title_jp": c.get("title_orig"),
                             "maker": c.get("maker"), "released": c.get("released"),
                             "cover_url": c.get("cover_url"), "tags": c.get("tags", [])[:6],
@@ -284,9 +318,63 @@ class AgentService:
             return {"error": r.get("error", "启动分析失败")}
         return {"ok": True, "_summary": "已触发后台重新分析，稍候可见结果"}
 
+    def _tool_import_game(self, args):
+        """导入用户提供的新游戏：搜索候选 → 有则按候选建条目（后台 AI 补全），无则建占位条目。"""
+        title = (args.get("title") or "").strip()
+        if not title:
+            return {"error": "缺少游戏名称"}
+        maker = (args.get("maker") or "").strip()
+        year = (args.get("year") or "").strip()
+        # 1) 用名称搜外部候选（沿用关键词展开策略）
+        cands = self._tool_search_providers({"keyword": title}).get("results") or []
+        if maker:
+            cands = [c for c in cands if maker.lower() in str(c.get("maker") or "").lower()] or cands
+        if cands:
+            cand = cands[0]
+            r = self._api.import_game_candidate(cand)
+            if r.get("ok"):
+                return {"ok": True, "id": r["id"], "title": title, "provider": cand["provider"],
+                        "matched": cand.get("title"),
+                        "_summary": f"已导入《{title}》，采用 {cand['provider'].upper()} 候选《{cand.get('title')}》的资料，正在后台补全封面/简介/中文名"}
+            return {"error": r.get("error", "导入失败")}
+        # 2) 无候选 → 占位条目，之后可再补
+        fields = {"title": title}
+        if maker:
+            fields["maker"] = maker
+        if year:
+            fields["released"] = year
+        r = self._api.add_game_manual(fields)
+        if r.get("ok"):
+            return {"ok": True, "id": r["id"], "title": title, "matched": "",
+                    "_summary": f"已按你提供的信息建立《{title}》的条目（未搜到外部资料），可之后再让我补全简介/封面"}
+        return {"error": r.get("error", "导入失败")}
+
     def _tool_correct_game(self, args):
         """透传用户给的正确信息（correct_game 与 update_game_info 同实现，语义更明确）。"""
         return self._tool_update_game(args)
+
+    def _tool_list_makers(self, args):
+        """列出全部规范厂商（含别名/游戏数），帮管家发现中英日重复写法。"""
+        r = self._api.list_makers()
+        if not r.get("ok"):
+            return {"error": r.get("error", "获取厂商列表失败")}
+        makers = r.get("makers") or []
+        return {"count": len(makers), "makers": [
+            {"name": m["name"], "count": m["count"],
+             "aliases": m.get("aliases") or [], "vndb_id": m.get("vndb_id") or ""}
+            for m in makers[:50]]}
+
+    def _tool_merge_makers(self, args):
+        """合并两个制作组：src 并入 dst（用户指定的目标写法）。"""
+        src = (args.get("src") or "").strip()
+        dst = (args.get("dst") or "").strip()
+        if not src or not dst:
+            return {"error": "需要 src 和 dst 两个厂商名"}
+        r = self._api.merge_makers(src, dst)
+        if not r.get("ok"):
+            return {"error": r.get("error", "合并失败")}
+        return {"ok": True, "canonical": r["canonical"],
+                "_summary": f"已合并「{src}」→「{r['canonical']}」，该厂商的游戏/关注/别名全部统一"}
 
     _TOOL_FN = {
         "search_games": _tool_search_games,
@@ -298,15 +386,20 @@ class AgentService:
         "update_game_info": _tool_update_game,
         "set_game_cover": _tool_set_cover,
         "reanalyze_game": _tool_reanalyze,
+        "import_game": _tool_import_game,
+        "list_makers": _tool_list_makers,
+        "merge_makers": _tool_merge_makers,
     }
 
     # ---------- 对话主循环 ----------
     @staticmethod
     def _needs_action(message, actions):
         """用户消息含修改意图，但还没有调用任何写操作工具。"""
-        if any(a["name"] in ("update_game_info", "correct_game", "set_game_cover") for a in actions):
+        if any(a["name"] in ("update_game_info", "correct_game", "set_game_cover",
+                             "merge_makers", "import_game") for a in actions):
             return False
-        hints = ("搞错", "不对", "修正", "改一下", "改成", "更新", "错了", "应该是", "不是", "改回", "改名为")
+        hints = ("搞错", "不对", "修正", "改一下", "改成", "更新", "错了", "应该是",
+                 "不是", "改回", "改名为", "合并", "是一个社", "一家")
         return any(h in (message or "") for h in hints)
 
     def chat(self, message, context_game_id=None, history=None):
@@ -376,7 +469,7 @@ class AgentService:
                     args = json.loads(tc.get("function", {}).get("arguments") or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                fn = self._TOOL_FN.get(name)
+                fn = self._tool_fns.get(name)  # 已绑定的实例方法，fn(args) 直接可用
                 if not fn:
                     result = {"error": f"未知工具 {name}"}
                 else:
@@ -384,6 +477,9 @@ class AgentService:
                         result = fn(args)
                     except Exception as e:
                         result = {"error": f"{type(e).__name__}: {e}"}
+                # 工具返回非 dict（未来新增工具）时兜底包装，避免 result.pop 崩掉整个循环
+                if not isinstance(result, dict):
+                    result = {"result": result} if result is not None else {"error": "工具无返回"}
                 summary = result.pop("_summary", None)
                 actions.append({"name": name, "args": args, "summary": summary})
                 content = json.dumps(result, ensure_ascii=False, default=str)[:2500]

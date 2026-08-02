@@ -142,6 +142,15 @@ def main():
     cfg = Config()
     jsapi = JsApi(db, cfg)
 
+    # 制作组名称锚定：启动即把历史中/英/日文混写归并到规范名（幂等，纯本地 SQL）
+    try:
+        from . import makers
+        makers.sync_all(db)
+        logging.info("制作组锚定完成: %d 个规范厂商",
+                     db.query_one("SELECT COUNT(*) c FROM makers")["c"])
+    except Exception as e:
+        logging.error("制作组锚定失败: %s", e)
+
     port = start_http_server()
     api.BASE_URL = f"http://127.0.0.1:{port}"
     print(f"[GALA] v{api.VERSION}  HTTP: {api.BASE_URL}")

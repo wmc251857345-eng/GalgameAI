@@ -22,10 +22,10 @@
           v-for="w in store.newReleases.items"
           :key="w.id"
           class="nr-card"
-          @click="store.openWorkDetail(w.id)"
+          @click="store.openWorkDetail(w.id, w)"
         >
           <div class="nr-cover-wrap">
-            <img v-if="w.cover_url" :src="w.cover_url" class="nr-cover" loading="lazy" />
+            <img v-if="w.cover_url" :src="w.cover_url" class="nr-cover" loading="lazy" v-imgfb="'🖼'" />
             <div v-else class="nr-cover nr-empty">🖼</div>
             <span v-if="w.owned" class="nr-owned" title="本地库已有">✓</span>
             <span v-else class="nr-new" title="新作！">NEW</span>
@@ -57,6 +57,7 @@
               class="wall-cover"
               :style="{ zIndex: 3 - i, transform: `translateX(${i * 8}px) rotate(${(i - 1) * 3}deg)` }"
               loading="lazy"
+              v-imgfb="'🏢'"
             />
           </template>
           <div v-else class="wall-cover wall-empty">🏢</div>

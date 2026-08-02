@@ -50,7 +50,7 @@ def score_candidate(query, cand):
 
 
 def search_candidates(cfg, query):
-    """bgm(直连) + vndb(有 token 时)。"""
+    """bgm(直连) + vndb(有 token 时) + steam(免 token)。"""
     cands = []
     try:
         cands += providers.bgm.search(cfg, query)
@@ -59,6 +59,10 @@ def search_candidates(cfg, query):
     try:
         res, _ = providers.vndb.search(cfg, query)
         cands += res
+    except Exception:
+        pass
+    try:
+        cands += providers.steam.search(cfg, query)
     except Exception:
         pass
     return cands

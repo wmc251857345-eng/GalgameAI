@@ -15,7 +15,12 @@
       <!-- ================= 头部横幅区 ================= -->
       <div class="detail-hero">
         <div class="hero-cover">
-          <img v-if="g.cover_url" :src="g.cover_url" alt="" />
+          <img
+            v-if="g.cover_url && !heroImgFail"
+            :src="g.cover_url"
+            alt=""
+            @error="heroImgFail = true"
+          />
           <div v-else class="cover-grad"></div>
         </div>
         <div class="hero-info">
@@ -124,6 +129,7 @@
             :src="c.cover_url"
             class="cover-cand"
             :title="(c.provider || '').toUpperCase() + ' · ' + (c.title || '')"
+            v-imgfb="'🖼'"
             @click="useCandCover(c.cover_url)"
           />
         </div>
@@ -180,12 +186,16 @@
 </template>
 
 <script setup>
-import { computed, onUnmounted, reactive, ref } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useLibraryStore } from '../stores/library.js'
 import { api } from '../api.js'
 
 const store = useLibraryStore()
 const g = computed(() => store.detail)
+
+const heroImgFail = ref(false)
+// 切换游戏时重置封面失败标记
+watch(() => store.selectedGameId, () => { heroImgFail.value = false })
 
 const editing = ref(false)
 const saving = ref(false)

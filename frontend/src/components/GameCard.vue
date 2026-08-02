@@ -1,7 +1,7 @@
 <template>
-  <div class="game-card" @click="$emit('open', game.id)">
+  <div class="game-card" @click="$emit('open', game.id)" @contextmenu.prevent="$emit('ctx', $event, game)">
     <div class="cover" :style="{ '--hue': game.hue ?? 220 }">
-      <img v-if="game.cover_url" :src="game.cover_url" class="cover-img" alt="" />
+      <img v-if="game.cover_url" :src="game.cover_url" class="cover-img" alt="" v-imgfb="''" />
       <div v-else class="cover-grad"></div>
       <button
         v-if="game.favorite"
@@ -28,5 +28,5 @@
 
 <script setup>
 defineProps({ game: Object })
-defineEmits(['open', 'fav', 'launch'])
+defineEmits(['open', 'fav', 'launch', 'ctx'])
 </script>

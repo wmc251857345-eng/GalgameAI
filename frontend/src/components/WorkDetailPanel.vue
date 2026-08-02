@@ -13,6 +13,10 @@
       </div>
 
       <template v-else-if="w">
+        <p v-if="store.workDetail.refreshError" class="wd-err refresh">
+          ⚠ {{ store.workDetail.refreshError }}
+          <button class="btn small" @click="store.refreshWorkDetail(store.workDetail.vndbId)">重试</button>
+        </p>
         <div class="wd-main">
           <div class="wd-cover-wrap">
             <img

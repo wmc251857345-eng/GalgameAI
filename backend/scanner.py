@@ -12,10 +12,10 @@ from .utils import now_iso, normalize, read_text_file
 
 SKIP_DIR = re.compile(
     r"^(save|savedata|data|patch|汉化|补丁|update|backup|cache|thumbs|logs?|"
-    r"System Volume Information|recycle|hotpatch)$", re.I)
+    r"System Volume Information|recycle|hotpatch|directx|redist|附件|免认证|安装|setup|updater)$", re.I)
 EXE_SKIP = re.compile(
-    r"setup|unins|install|launcher|update|patch|readme|directx|redist|dxsetup|"
-    r"crash|error|启动器|汉化|日语|savedata|auto", re.I)
+    r"setup|unins|uninstall|卸载|install|launcher|update|patch|readme|directx|redist|dxsetup|"
+    r"crash|error|启动器|汉化|日语|savedata|auto|免认证|crack|vcredist|dotnetfx|startmenu", re.I)
 IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
 COVER_NAMES = re.compile(r"cover|box|package|jacket|front|表紙|パッケージ|立ち絵", re.I)
 TEXT_NAMES = re.compile(r"readme|说明|説明|漢化|汉化|ver|version|游戏|游戏|インストール|install|manual|\.nfo", re.I)
@@ -136,6 +136,11 @@ def scan_root(root, db):
             elif os.path.isdir(p) and not _hidden(e):
                 subdirs.append(e)
         if exes:
+            # 目录里只有安装器/运行库/免认证等垃圾 exe（如 DirectX9c/dxsetup.exe、
+            # 附件/免认证/Start.exe）→ 不是游戏，跳过且不下钻（修复误扫垃圾项）
+            real = [f for f in exes if not EXE_SKIP.search(f)]
+            if not real:
+                continue
             info = _extract_game(d, root, exes)
             if _save_game(db, info):
                 found.append(info)

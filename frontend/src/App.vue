@@ -49,7 +49,10 @@ const errorBanner = ref('')
 window.__galaSetError = (msg) => { errorBanner.value = msg }
 
 function onNav(view) {
+  // 离开库时记录滚动位置；回到库时恢复（详情/其他页返回不丢列表位置）
+  if (store.currentView === 'library' && view !== 'library') store._saveLibraryScroll()
   store.currentView = view
+  if (view === 'library') store._restoreLibraryScroll()
 }
 
 onMounted(async () => {

@@ -124,11 +124,13 @@ def _producer_keywords(name):
         tok = tok.strip()
         if len(tok) >= 2 and tok not in kws:
             kws.append(tok)
-    return kws[:6]
+    return kws[:4]  # 关键词上限 4：再多会让 厂商档案 打开时间失控（每个关键词一次请求）
 
 
 def _producer_search(cfg, keyword):
-    """单关键词搜 producer，返回最佳匹配（名称/别名精确匹配优先）。"""
+    """单关键词搜 producer，返回最佳匹配（名称/别名精确匹配优先）。
+    快失败：12s×1 次（VNDB 正常 <2s；网络差时宁可快速失败换下一关键词/报错，
+    也不能让桥接线程挂几十秒 → 前端等超时 → 用户以为卡死）。"""
     import time
     time.sleep(0.12)  # 节流：关键词展开可能连续多次请求，防 VNDB 限速
     token = cfg.get("vndb_token", "")
@@ -141,7 +143,7 @@ def _producer_search(cfg, keyword):
             json_body={"filters": ["search", "=", keyword],
                        "fields": "id,name,aliases,description,type",
                        "sort": "searchrank", "results": 8},
-            timeout=20,
+            timeout=12, tries=1,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Token {token}"})
     except Exception as e:
@@ -176,7 +178,7 @@ def search_producers(cfg, keyword, limit=8):
             json_body={"filters": ["search", "=", keyword],
                        "fields": "id,name,aliases,type",
                        "sort": "searchrank", "results": limit},
-            timeout=20,
+            timeout=12, tries=1,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Token {token}"})
     except Exception as e:

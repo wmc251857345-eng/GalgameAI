@@ -17,6 +17,11 @@ STATE = {
 }
 _lock = threading.Lock()
 
+# 已放弃的 AI 识别条目（LLM 识别不出的游戏；进程内记忆，避免 analyze_all/扫描自动分析
+# 反复对同一批游戏烧 token 调 LLM）。重启后清空，每会话给一次重试机会。
+# 注意：只影响 LLM 识别步骤，bgm/vndb 免费候选仍会跑；match_cache 记忆命中优先不受影响。
+_ANALYZE_GAVE_UP = set()
+
 # 单游戏后台任务（重新分析用）：前端轮询 get_job_status
 ONE_JOB = {"running": False, "game_id": None, "stage": "", "result": None, "error": None}
 
@@ -67,24 +72,28 @@ def download_cover(cfg, game_id, url, fallback_local=None):
 def _apply_match(cfg, db, game, cand, async_enrich=False):
     """把候选应用到 game：填字段、下载封面。async_enrich=True 时 AI 润色后台执行
     （用于桥接线程内的确认操作，避免同步等 LLM 卡死界面）。"""
+    from . import makers
     cover_path = download_cover(cfg, game["id"], cand.get("cover_url"),
                                 game.get("cover_local"))
     bgm_id = int(cand["external_id"]) if cand["provider"] == "bgm" and cand["external_id"].isdigit() else None
     vndb_id = cand["external_id"] if cand["provider"] == "vndb" else None
+    steam_id = cand["external_id"] if cand["provider"] == "steam" else None
     rating = cand.get("rating")
     if isinstance(rating, (int, float)) and rating > 20:  # VNDB 0-100 → 统一 10 分制
         rating = round(rating / 10, 2)
+    # 制作组名自动锚定：中/英/日文写法统一到规范名（数据库级合并，不再各写各的）
+    maker = makers.canonical(db, cand.get("maker") or "")
     db.execute(
         """UPDATE games SET title=?, title_en=?, title_jp=?, maker=?, released=?,
            rating=?, description=?, cover_path=?, cover_url=?, vndb_id=?, bgm_id=?,
-           length_level=?, length_minutes=?, status=2, match_confidence=?, source=?
+           steam_id=?, length_level=?, length_minutes=?, status=2, match_confidence=?, source=?
            WHERE id=?""",
         (cand.get("title") or game["title"],
          cand.get("title") or "", cand.get("title_orig") or "",
-         cand.get("maker") or "", cand.get("released") or "",
+         maker, cand.get("released") or "",
          rating, cand.get("summary") or "",
          cover_path, cand.get("cover_url") or "",
-         vndb_id, bgm_id,
+         vndb_id, bgm_id, steam_id,
          cand.get("length_level"), cand.get("length_minutes"),
          cand["score"], cand["provider"], game["id"]))
     if async_enrich:
@@ -152,13 +161,36 @@ AI_IDENTIFY_USER = """根据已知信息识别这部 Galgame，输出 JSON：
 如果这些信息不足以确定是哪个游戏，confidence 给低于 0.3，并尽量给出最可能的推测。"""
 
 
+def _parent_hint(game):
+    """从路径取上级目录名作为厂商/品牌线索（GalGame/厂商/作品名 两层结构）。
+
+    平铺布局（父目录=库根）、根目录自身、隐藏目录、明显非厂商的归类目录
+    （Uncategorized 等）一律返回空，避免把噪音当厂商。
+    """
+    p = (game.get("path") or "").strip()
+    if not p:
+        return ""
+    parent = os.path.basename(os.path.dirname(p.rstrip("\\/")))
+    if not parent or parent.startswith((".", "$")):
+        return ""
+    root = (game.get("root") or "").strip()
+    if root and os.path.normpath(os.path.dirname(p)) == os.path.normpath(root):
+        return ""  # 平铺布局：上级就是库根，没有厂商层
+    if parent.lower() in ("uncategorized", "unclassified", "misc", "other", "未分类", "其他"):
+        return ""
+    return parent
+
+
 def _ai_identify(cfg, db, game):
-    """AI 主通道识别：目录名 + readme + 本地封面(视觉)。返回候选 dict 或 None。"""
+    """AI 主通道识别：目录名 + 上级目录(厂商线索) + readme + 本地封面(视觉)。返回候选 dict 或 None。"""
     from .providers import llm
     extra = []
     text = (game.get("text_sample") or "").strip()
     if text:
         extra.append(f"本地文件信息:\n{text[:800]}")
+    parent = _parent_hint(game)
+    if parent:
+        extra.append(f"上级目录名（通常是制作公司/品牌，请用于辅助确认厂商）: {parent}")
     user = AI_IDENTIFY_USER.format(folder=game["title"],
                                    extra="\n".join(extra))
     vision = None
@@ -198,9 +230,9 @@ def _ai_identify(cfg, db, game):
 
 
 def _analyze_one(cfg, db, game):
-    """识别流程：用户纠正记忆(match_cache) → AI 识别 → bgm/vndb 候选。"""
+    """识别流程：用户纠正记忆(match_cache) → AI 识别 → bgm/vndb/steam 候选。"""
     from .matcher import match
-    from .providers import bgm, vndb
+    from .providers import bgm, steam, vndb
     from .utils import normalize
     thr = cfg.get("analysis.auto_confirm_threshold", 0.9)
 
@@ -213,6 +245,8 @@ def _analyze_one(cfg, db, game):
             cand = None
             if (mc.get("provider") or "vndb") == "bgm":
                 cand = bgm.get(cfg, mc["vndb_id"])
+            elif (mc.get("provider") or "") == "steam":
+                cand, _ = steam.get(cfg, mc["vndb_id"])
             else:
                 cand, _ = vndb.get(cfg, mc["vndb_id"])
             if cand:
@@ -222,7 +256,13 @@ def _analyze_one(cfg, db, game):
                 _apply_match(cfg, db, game, cand)
                 return {"status": 2, "matched": cand.get("title"), "score": 1.0, "from_cache": True}
 
-    ai_cand = _ai_identify(cfg, db, game)
+    # AI 识别：已在 _ANALYZE_GAVE_UP 里的游戏跳过 LLM 调用（防 analyze_all 反复烧 token，
+    # 仍走免费的 bgm/vndb 候选；进程重启清空 → 每会话给一次重试机会）
+    ai_cand = None
+    if game["id"] not in _ANALYZE_GAVE_UP:
+        ai_cand = _ai_identify(cfg, db, game)
+        if ai_cand is None:
+            _ANALYZE_GAVE_UP.add(game["id"])  # 识别不出 → 本会话不再问 AI
     web_cands = []
     try:
         web_cands = match(cfg, game["title"])
@@ -256,6 +296,8 @@ def _run_one_job(cfg, db, game):
         ONE_JOB.update(running=True, game_id=game["id"], stage="analyze",
                        result=None, error=None)
     try:
+        # 用户手动触发重新分析 = 明确的重试意图：清掉放弃记忆，给一次完整 LLM 识别
+        _ANALYZE_GAVE_UP.discard(game["id"])
         if game.get("status") == 2 and game.get("vndb_id"):
             from .api import JsApi
             r = JsApi._refresh_game(cfg, db, game)
@@ -272,6 +314,7 @@ def scan_all(cfg, db):
     if STATE["running"]:
         return
     _set(running=True, stage="scan", total=0, done=0, current="", error=None, cancel_requested=False)
+    new_paths = []
     try:
         from .scanner import scan_root
         roots = cfg.get("library_roots", [])
@@ -284,11 +327,41 @@ def scan_all(cfg, db):
                 continue
             _set(current=f"扫描 {root}")
             found = scan_root(root, db)
+            new_paths.extend(i["path"] for i in found if i.get("path"))
             _log(f"扫描 {root}: 新增 {len(found)} 个游戏")
     except Exception as e:
         _set(error=str(e))
     finally:
+        # 扫描到新游戏 → 自动启动 AI 识别/匹配（扫描即整理，无需手动再点分析）
+        if new_paths and not STATE.get("cancel_requested"):
+            _log(f"扫描完成，自动分析 {len(new_paths)} 个新增游戏…")
+            _auto_analyze_new(cfg, db, new_paths)
         _set(running=False, stage="idle", current="")
+
+
+def _auto_analyze_new(cfg, db, paths):
+    """对扫描新增的游戏逐个跑完整识别：match_cache 记忆 → AI 识别 → bgm/vndb 候选。
+    高分自动入库（status=2），低分进待确认（status=1）。同一 STATE 进度，前端无需新接口。
+    """
+    games = []
+    for p in paths:
+        g = db.query_one("SELECT * FROM games WHERE path=? ORDER BY id DESC LIMIT 1", (p,))
+        if g and g.get("status") in (0, 1):
+            games.append(g)
+    _set(stage="analyze", total=len(games), done=0, current="")
+    for i, g in enumerate(games, 1):
+        if STATE.get("cancel_requested"):
+            _log("自动分析已取消")
+            break
+        _set(current=g["title"], done=i - 1)
+        try:
+            r = _analyze_one(cfg, db, g)
+            tag = "✓入库" if r.get("status") == 2 else ("待确认" if r.get("status") == 1 else "?")
+            _log(f"[{i}/{len(games)}] {g['title']} → {tag}"
+                 + (f" ({r.get('matched')} {r.get('score')})" if r.get("matched") else ""))
+        except Exception as e:
+            _log(f"[{i}/{len(games)}] {g['title']} 失败: {e}")
+        time.sleep(0.3)
 
 
 def analyze_all(cfg, db):
@@ -350,14 +423,18 @@ def fill_covers_all(cfg, db):
 
 
 def _find_cover_url(cfg, g, db=None):
-    """按优先级找一个封面 URL：vndb_id 精确 → bgm_id 精确 → 标题链搜索 → 历史候选兜底。"""
-    from .providers import bgm, vndb
+    """按优先级找一个封面 URL：vndb_id 精确 → bgm_id 精确 → steam_id 精确 → 标题链搜索 → 历史候选兜底。"""
+    from .providers import bgm, steam, vndb
     if g.get("vndb_id"):
         cand, _ = vndb.get(cfg, g["vndb_id"])
         if cand and cand.get("cover_url"):
             return cand["cover_url"]
     if g.get("bgm_id"):
         cand = bgm.get(cfg, str(g["bgm_id"]))
+        if cand and cand.get("cover_url"):
+            return cand["cover_url"]
+    if g.get("steam_id"):
+        cand, _ = steam.get(cfg, g["steam_id"])
         if cand and cand.get("cover_url"):
             return cand["cover_url"]
     # 标题链：日文原名 → 英文名 → 中文名 → 文件夹名（每个都展开成多个搜索变体）
@@ -385,6 +462,12 @@ def _find_cover_url(cfg, g, db=None):
         try:
             cands = bgm.search(cfg, kv)
             for c in cands:
+                if c.get("cover_url"):
+                    return c["cover_url"]
+        except Exception:
+            pass
+        try:
+            for c in steam.search(cfg, kv, limit=3):
                 if c.get("cover_url"):
                     return c["cover_url"]
         except Exception:

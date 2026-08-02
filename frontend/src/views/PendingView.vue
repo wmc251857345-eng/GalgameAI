@@ -40,7 +40,7 @@
             class="cand-card"
             :class="'conf-' + confClass(c.score)"
           >
-            <img v-if="c.cover_url" :src="c.cover_url" class="cand-img" alt="" />
+            <img v-if="c.cover_url" :src="c.cover_url" class="cand-img" alt="" v-imgfb="''" />
             <div v-else class="cand-img cand-img-empty"></div>
             <div class="cand-title">{{ c.title }}{{ c.title_orig && c.title_orig !== c.title ? ' / ' + c.title_orig : '' }}</div>
             <div class="cand-meta">{{ c.maker || '' }} {{ c.released || '' }} · {{ c.provider.toUpperCase() }}</div>
@@ -58,10 +58,15 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useLibraryStore } from '../stores/library.js'
 
 const store = useLibraryStore()
+
+// 进入页面立即加载待确认列表（修复：角标有数但列表空——之前只加载了 summary，没加载列表）
+onMounted(() => {
+  store.loadPending()
+})
 
 const progressPct = computed(() => {
   const { total, done } = store.scan
