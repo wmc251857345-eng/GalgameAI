@@ -57,7 +57,10 @@ def _do_backup(db, out_dir):
 
 
 def maybe_auto_backup(cfg, db):
-    """启动时按间隔自动备份（database/backup/auto_*，保留最近 10 份）。"""
+    """启动时按间隔自动备份（database/backup/auto_*，保留最近 10 份）。
+
+    同时执行存档备份（若引擎可用且有已配置存档路径的游戏）。
+    """
     if not cfg.get("backup.auto_enabled", True):
         return
     interval = max(1, int(cfg.get("backup.interval_days", 7)))
@@ -83,6 +86,20 @@ def maybe_auto_backup(cfg, db):
         print(f"[GALA] 自动备份完成")
     except Exception as e:
         print(f"[GALA] 自动备份失败: {e}")
+    # 存档自动备份（引擎可用时）
+    try:
+        from . import backup as B
+        if B.engine_ready(cfg):
+            js = JsApi(db, cfg)
+            result = js.backup_all(dry_run=False)
+            if result.get("ok"):
+                print(f"[GALA] 存档自动备份完成: {result.get('overall', {}).get('processedGames')} 款")
+            else:
+                # 无配置不是错误，静默
+                if "还没有任何游戏配置" not in (result.get("error") or ""):
+                    print(f"[GALA] 存档自动备份失败: {result.get('error')}")
+    except Exception as e:
+        print(f"[GALA] 存档自动备份异常: {e}")
 
 
 def _rating_disp(r):
@@ -409,6 +426,28 @@ class JsApi:
     def get_scan_progress(self):
         from . import enrich
         return dict(enrich.STATE)
+
+    def organize_plan(self):
+        """生成目录整理计划（dry-run，不移动任何文件）。"""
+        from . import organizer
+        try:
+            return organizer.build_plan(self._cfg, self._db)
+        except Exception as e:
+            return {"ok": False, "error": f"整理计划生成失败: {e}"}
+
+    def organize_apply(self, items):
+        """执行整理计划。items: [{game_id, to}]。"""
+        from . import organizer
+        if not isinstance(items, list) or not items:
+            return {"ok": False, "error": "没有要执行的项"}
+        try:
+            return organizer.apply_plan(self._cfg, self._db, items)
+        except Exception as e:
+            return {"ok": False, "error": f"整理执行失败: {e}"}
+
+    def get_organize_history(self, limit=20):
+        from . import organizer
+        return {"ok": True, "items": organizer.list_history(self._db, limit)}
 
     def get_pending(self):
         rows = []
@@ -1227,6 +1266,198 @@ class JsApi:
         ts = time.strftime("%Y%m%d_%H%M%S")
         out = _do_backup(self._db, os.path.join(paths.BASE, "database", "backup", ts))
         return {"ok": True, "path": out}
+
+    # ---------- 存档备份 (ludusavi 引擎) ----------
+    def backup_engine_status(self):
+        """引擎状态：路径、就绪、备份目标列表。"""
+        from . import backup as B
+        exe = B.find_engine(self._cfg)
+        return {
+            "ok": exe is not None,
+            "engine_path": exe,
+            "config_dir": B.ENGINE_CONFIG_DIR,
+            "backup_root": B.backup_root(self._cfg),
+            "targets": B.detect_targets(self._cfg),
+            "error": None if exe else "未找到 ludusavi.exe，请在设置中配置引擎路径",
+        }
+
+    def backup_set_targets(self, targets):
+        """保存备份目标列表。targets: [{path, enabled, label}]"""
+        from . import backup as B
+        clean = []
+        for t in targets:
+            p = (t.get("path") or "").strip()
+            if p:
+                clean.append({
+                    "path": p,
+                    "enabled": bool(t.get("enabled", True)),
+                    "label": (t.get("label") or "").strip(),
+                })
+        self._cfg.set("backup.targets", clean)
+        # 同步引擎主备份路径
+        B.ensure_engine_config(self._cfg)
+        return {"ok": True, "targets": B.detect_targets(self._cfg)}
+
+    def backup_detect_save_paths(self, game_id):
+        """智能探测某游戏的存档路径候选。"""
+        from . import backup as B
+        g = self._db.query_one("SELECT * FROM games WHERE id=?", (int(game_id),))
+        if not g:
+            return {"ok": False, "error": "游戏不存在"}
+        return {"ok": True, "candidates": B.detect_save_paths(g)}
+
+    def backup_sync_configs(self):
+        """把 GALA 库中已配置存档路径的游戏同步为引擎 custom games。
+
+        规则：games 表无存档配置列 → 用 backup_history.save_paths 作为存档路径来源。
+        """
+        from . import backup as B
+        B.ensure_engine_config(self._cfg)
+        games = self._db.query(
+            "SELECT bh.game_id, g.title, bh.save_paths FROM backup_history bh "
+            "JOIN games g ON g.id = bh.game_id WHERE bh.save_paths IS NOT NULL AND bh.save_paths != '[]'")
+        entries = []
+        for g in games:
+            try:
+                paths_ = json.loads(g["save_paths"])
+            except (ValueError, TypeError):
+                continue
+            if paths_:
+                entries.append({"name": g["title"], "files": paths_})
+        if not entries:
+            return {"ok": True, "count": 0, "note": "没有已配置存档路径的游戏，跳过 custom games 同步"}
+        return B.write_custom_games(self._cfg, entries)
+
+    def backup_save_paths(self, game_id, paths_):
+        """配置某游戏的存档路径列表（custom games files）。"""
+        from . import backup as B
+        B.ensure_engine_config(self._cfg)
+        self._db.execute(
+            "INSERT OR REPLACE INTO backup_history (game_id, engine_name, save_paths) "
+            "VALUES (?, ?, ?)",
+            (int(game_id), None, json.dumps(paths_, ensure_ascii=False)))
+        return self.backup_sync_configs()
+
+    def backup_get_save_paths(self, game_id):
+        """读取某游戏已配置的存档路径。"""
+        row = self._db.query_one(
+            "SELECT save_paths FROM backup_history WHERE game_id=?", (int(game_id),))
+        if not row or not row["save_paths"]:
+            return {"ok": True, "paths": []}
+        try:
+            return {"ok": True, "paths": json.loads(row["save_paths"])}
+        except ValueError:
+            return {"ok": True, "paths": []}
+
+    def backup_game(self, game_ids, dry_run=False):
+        """备份指定游戏（按 GALA game_id 列表）。
+
+        返回引擎 JSON + GALA 侧元数据更新。
+        """
+        from . import backup as B
+        B.ensure_engine_config(self._cfg)
+        self.backup_sync_configs()
+        names = []
+        for gid in game_ids:
+            row = self._db.query_one("SELECT title FROM games WHERE id=?", (int(gid),))
+            if row:
+                names.append(row["title"])
+        if not names:
+            return {"ok": False, "error": "没有找到对应游戏"}
+        result = B.backup(self._cfg, games=names, dry_run=dry_run)
+        if not result.get("ok"):
+            return result
+        # 更新元数据
+        for gid, name in zip(game_ids, names):
+            g_res = result.get("games", {}).get(name, {})
+            if not dry_run and g_res.get("decision") == "Processed":
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                bytes_ = sum(f.get("bytes", 0) for f in g_res.get("files", {}).values())
+                self._db.execute(
+                    """INSERT INTO backup_history (game_id, engine_name, last_backup_at, total_bytes, backup_count)
+                       VALUES (?, ?, ?, ?, 1)
+                       ON CONFLICT(game_id) DO UPDATE SET
+                         last_backup_at=excluded.last_backup_at,
+                         total_bytes=excluded.total_bytes,
+                         backup_count=backup_count+1""",
+                    (int(gid), name, ts, bytes_))
+                self._db.execute(
+                    "INSERT INTO backup_versions (game_id, backed_at, bytes) VALUES (?, ?, ?)",
+                    (int(gid), ts, bytes_))
+        return result
+
+    def backup_all(self, dry_run=False):
+        """备份全部已配置存档路径的游戏到所有启用目标（U盘/OneDrive/本地多线）。"""
+        from . import backup as B
+        B.ensure_engine_config(self._cfg)
+        self.backup_sync_configs()
+        games = self._db.query(
+            "SELECT bh.game_id, g.title FROM backup_history bh JOIN games g ON g.id=bh.game_id "
+            "WHERE bh.save_paths IS NOT NULL AND bh.save_paths != '[]'")
+        names = [g["title"] for g in games]
+        if not names:
+            return {"ok": False, "error": "还没有任何游戏配置存档路径，先到游戏详情页配置"}
+        result = B.backup_multi(self._cfg, games=names, dry_run=dry_run)
+        if not result.get("ok"):
+            return result
+        # 更新元数据（任一目标成功即记录）
+        if not dry_run:
+            for g in games:
+                g_res = result.get("games", {}).get(g["title"], {})
+                if g_res.get("decision") == "Processed":
+                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                    bytes_ = sum(f.get("bytes", 0) for f in g_res.get("files", {}).values())
+                    self._db.execute(
+                        """INSERT INTO backup_history (game_id, engine_name, last_backup_at, total_bytes, backup_count)
+                           VALUES (?, ?, ?, ?, 1)
+                           ON CONFLICT(game_id) DO UPDATE SET
+                             last_backup_at=excluded.last_backup_at,
+                             total_bytes=excluded.total_bytes,
+                             backup_count=backup_count+1""",
+                        (g["game_id"], g["title"], ts, bytes_))
+                    self._db.execute(
+                        "INSERT INTO backup_versions (game_id, backed_at, bytes) VALUES (?, ?, ?)",
+                        (g["game_id"], ts, bytes_))
+        return result
+
+    def backup_restore_game(self, game_id, dry_run=False):
+        """恢复指定游戏存档（从备份根恢复到原位置）。"""
+        from . import backup as B
+        B.ensure_engine_config(self._cfg)
+        row = self._db.query_one("SELECT title FROM games WHERE id=?", (int(game_id),))
+        if not row:
+            return {"ok": False, "error": "游戏不存在"}
+        return B.restore(self._cfg, games=[row["title"]], dry_run=dry_run)
+
+    def backup_list(self, game_id=None):
+        """备份历史列表（GALA 侧元数据 + 引擎侧备份数）。"""
+        from . import backup as B
+        B.ensure_engine_config(self._cfg)
+        if game_id:
+            rows = self._db.query(
+                "SELECT * FROM backup_history WHERE game_id=?", (int(game_id),))
+        else:
+            rows = self._db.query("SELECT * FROM backup_history ORDER BY last_backup_at DESC")
+        versions = {r["game_id"]: r for r in self._db.query(
+            "SELECT game_id, MAX(backed_at) last_backup_at, COUNT(*) count FROM backup_versions GROUP BY game_id")}
+        out = []
+        for r in rows:
+            g = self._db.query_one("SELECT title FROM games WHERE id=?", (r["game_id"],))
+            v = versions.get(r["game_id"], {})
+            out.append({
+                "game_id": r["game_id"], "title": g["title"] if g else None,
+                "engine_name": r["engine_name"], "save_paths": json.loads(r["save_paths"] or "[]"),
+                "last_backup_at": r["last_backup_at"], "total_bytes": r["total_bytes"],
+                "backup_count": r["backup_count"], "last_version_at": v.get("last_backup_at"),
+            })
+        return {"ok": True, "items": out}
+
+    def backup_versions(self, game_id):
+        """某游戏的备份版本时间线（GALA 侧记录）。"""
+        rows = self._db.query(
+            "SELECT * FROM backup_versions WHERE game_id=? ORDER BY backed_at DESC",
+            (int(game_id),))
+        return {"ok": True, "items": rows}
 
     # ---------- 多提供商管理 ----------
     def list_providers(self):

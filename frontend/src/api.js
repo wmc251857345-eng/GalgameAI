@@ -164,6 +164,25 @@ export const api = {
     return { running: false, stage: 'idle', total: 0, done: 0, current: '', error: null, log: [] }
   },
 
+  // 目录自动整理
+  async organizePlan() {
+    if (hasBridge()) return withTimeout(window.pywebview.api.organize_plan(), 30000, '整理计划')
+    await delay()
+    return { ok: true, items: [], total: 0 }
+  },
+
+  async organizeApply(items) {
+    if (hasBridge()) return withTimeout(window.pywebview.api.organize_apply(items), 120000, '整理执行')
+    await delay(400)
+    return { ok: true, results: [] }
+  },
+
+  async getOrganizeHistory() {
+    if (hasBridge()) return window.pywebview.api.get_organize_history(20)
+    await delay()
+    return { ok: true, items: [] }
+  },
+
   async confirmMatch(gameId, provider, externalId) {
     if (hasBridge()) {
       return withTimeout(window.pywebview.api.confirm_match(gameId, provider, externalId), 30000, '确认')
@@ -561,5 +580,66 @@ export const api = {
     if (hasBridge()) return window.pywebview.api.list_follows()
     await delay()
     return { ok: true, follows: [] }
+  },
+
+  // ---------- 存档备份 (ludusavi 引擎) ----------
+  async backupEngineStatus() {
+    if (hasBridge()) return window.pywebview.api.backup_engine_status()
+    await delay()
+    return { ok: true, engine_path: null, config_dir: '', backup_root: '', targets: [], error: '引擎未配置(mock)' }
+  },
+
+  async backupSetTargets(targets) {
+    if (hasBridge()) return window.pywebview.api.backup_set_targets(targets)
+    await delay()
+    return { ok: true, targets: [] }
+  },
+
+  async backupDetectSavePaths(gameId) {
+    if (hasBridge()) return window.pywebview.api.backup_detect_save_paths(gameId)
+    await delay(300)
+    return { ok: true, candidates: [] }
+  },
+
+  async backupSavePaths(gameId, paths) {
+    if (hasBridge()) return window.pywebview.api.backup_save_paths(gameId, paths)
+    await delay()
+    return { ok: true, count: 0 }
+  },
+
+  async backupGetSavePaths(gameId) {
+    if (hasBridge()) return window.pywebview.api.backup_get_save_paths(gameId)
+    await delay()
+    return { ok: true, paths: [] }
+  },
+
+  async backupGame(gameIds, dryRun = false) {
+    if (hasBridge()) return window.pywebview.api.backup_game(gameIds, dryRun)
+    await delay(800)
+    return { ok: true, overall: { totalGames: gameIds.length, totalBytes: 0, processedGames: 0, changedGames: { new: 0, different: 0, same: gameIds.length } }, targets: [] }
+  },
+
+  async backupAll(dryRun = false) {
+    if (hasBridge()) return window.pywebview.api.backup_all(dryRun)
+    await delay(800)
+    return { ok: true, overall: { totalGames: 0, totalBytes: 0, processedGames: 0, changedGames: { new: 0, different: 0, same: 0 } }, targets: [] }
+  },
+
+  async backupRestoreGame(gameId, dryRun = false) {
+    if (hasBridge()) return window.pywebview.api.backup_restore_game(gameId, dryRun)
+    await delay(800)
+    return { ok: true, overall: { totalGames: 1, processedGames: 1 } }
+  },
+
+  async backupList(gameId = null) {
+    if (hasBridge()) return window.pywebview.api.backup_list(gameId)
+    await delay()
+    return { ok: true, items: [] }
+  },
+
+  async backupVersions(gameId) {
+    if (hasBridge()) return window.pywebview.api.backup_versions(gameId)
+    await delay()
+    return { ok: true, items: [] }
   },
 }

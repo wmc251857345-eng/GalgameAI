@@ -115,6 +115,26 @@
             🤖 开始 AI 分析
           </button>
         </div>
+        <div v-if="store.lastScan" class="scan-result">
+          <div class="scan-result-head">
+            <span v-if="store.lastScan.new_count > 0">🆕 本次扫描新增 {{ store.lastScan.new_count }} 款游戏</span>
+            <span v-else>✓ 扫描完成，无新增游戏</span>
+            <span class="scan-result-meta" v-if="store.lastScan.missing_count > 0">
+              另有 {{ store.lastScan.missing_count }} 个失效路径
+            </span>
+            <button class="btn small" style="margin-left: auto" @click="store.lastScan = null">✕</button>
+          </div>
+          <div v-if="store.lastScan.new_count > 0" class="scan-result-list">
+            <span v-for="ng in store.lastScan.new_games.slice(0, 6)" :key="ng.id" class="scan-result-item">
+              {{ ng.title }}<i class="scan-result-status" :class="'s' + ng.status">{{
+                ng.status === 2 ? '已入库' : (ng.status === 1 ? '待确认' : '扫描到') }}</i>
+            </span>
+            <span v-if="store.lastScan.new_count > 6" class="dim">…等 {{ store.lastScan.new_count }} 款</span>
+          </div>
+          <div style="margin-top: 8px" v-if="store.lastScan.new_count > 0">
+            <button class="btn small primary" @click="store.currentView = 'pending'">📋 去待确认列表</button>
+          </div>
+        </div>
         <div class="row" style="margin-top: 6px">
           <button class="btn small" :disabled="store.scan.running" @click="fillCovers">
             🖼 补齐缺失封面
@@ -144,6 +164,67 @@
         </div>
       </section>
 
+      <!-- 目录自动整理 -->
+      <section class="card">
+        <h2>📂 目录自动整理</h2>
+        <p class="hint">按你的整理习惯（品牌桶 + Uncategorized 兜底），把散落在库根/【PC】包装层的新游戏移入对应桶目录。
+          引擎会从现有目录结构学习厂商→桶映射（如 Atelier_Kaguya 桶），不会为每个厂商乱建新桶。</p>
+        <div class="row" style="margin-top: 10px">
+          <button class="btn primary" :disabled="store.organize.applying" @click="store.generateOrganizePlan()">
+            🔍 {{ store.organize.applying ? '处理中…' : '生成整理计划' }}
+          </button>
+          <button class="btn small" @click="store.loadOrganizeHistory()">🕘 整理历史</button>
+        </div>
+        <p v-if="store.organize.error" class="error-text" style="margin-top: 8px">⚠ {{ store.organize.error }}</p>
+
+        <!-- 整理计划（dry-run 待确认列表） -->
+        <div v-if="store.organize.plan && store.organize.plan.length" style="margin-top: 12px">
+          <div class="hint" style="margin-bottom: 6px">
+            发现 {{ store.organize.plan.length }} 个未整理的游戏（勾选后一键执行，全部同盘移动，可安全预览）：
+          </div>
+          <div class="organize-plan">
+            <label v-for="it in store.organize.plan" :key="it.game_id" class="organize-item">
+              <input type="checkbox" v-model="it.selected" />
+              <span class="organize-title">{{ it.title }}</span>
+              <span class="organize-maker" v-if="it.maker">{{ it.maker }}</span>
+              <span class="organize-arrow">→</span>
+              <code class="organize-to">{{ it.to }}</code>
+              <span class="scan-result-status" :class="it.reason.startsWith('包装') ? 's0' : 's1'">{{ it.reason }}</span>
+            </label>
+          </div>
+          <div class="row" style="margin-top: 10px">
+            <button class="btn primary" :disabled="store.organize.applying"
+                    @click="store.applyOrganizePlan(store.organize.plan.filter(x => x.selected))">
+              ✅ 执行所选整理（{{ store.organize.plan.filter(x => x.selected).length }} 项）
+            </button>
+            <button class="btn" :disabled="store.organize.applying" @click="store.organize.plan = null">取消</button>
+          </div>
+        </div>
+        <div v-else-if="store.organize.plan && !store.organize.plan.length" class="hint" style="margin-top: 8px">
+          ✓ 没有需要整理的游戏，目录结构已经很整洁。
+        </div>
+
+        <!-- 执行结果 -->
+        <div v-if="store.organize.results && store.organize.results.length" class="organize-results" style="margin-top: 12px">
+          <div v-for="r in store.organize.results" :key="r.game_id" class="organize-result"
+               :class="r.ok ? 'ok' : 'fail'">
+            {{ r.ok ? '✅' : '❌' }} {{ r.title || ('#' + r.game_id) }}
+            <span v-if="r.ok && r.moved">: {{ r.from }} → {{ r.to }}</span>
+            <span v-else-if="r.ok && !r.moved">: {{ r.note || '无需移动' }}</span>
+            <span v-else>: {{ r.error }}</span>
+          </div>
+        </div>
+
+        <!-- 整理历史 -->
+        <div v-if="store.organize.history.length" class="organize-history" style="margin-top: 12px">
+          <div class="hint" style="margin-bottom: 6px">最近整理记录（{{ store.organize.history.length }} 条）：</div>
+          <div v-for="h in store.organize.history.slice(0, 8)" :key="h.id" class="organize-result" :class="h.ok ? 'ok' : 'fail'">
+            {{ h.ok ? '✅' : '❌' }} {{ h.title }}: {{ h.from_path }} → {{ h.to_path }}
+            <span class="dim" style="margin-left: 8px">{{ h.moved_at }}</span>
+          </div>
+        </div>
+      </section>
+
       <!-- 分析参数 -->
       <section class="card">
         <h2>分析</h2>
@@ -161,7 +242,34 @@
 
       <!-- 备份 -->
       <section class="card">
-        <h2>备份</h2>
+        <h2>存档备份（ludusavi 引擎）</h2>
+        <div class="row">
+          <label>引擎路径</label>
+          <input v-model="bkEnginePath" placeholder="如 G:\tools\ludusavi-master\ludusavi.exe（留空自动探测）" style="flex: 1" />
+          <button class="btn small" @click="probeEngine">🔍 探测</button>
+        </div>
+        <div v-if="bkStatus" class="bk-status" :class="bkStatus.ok ? 'ok' : 'fail'">
+          {{ bkStatus.ok ? `✓ 引擎就绪：${bkStatus.engine_path}` : `✗ ${bkStatus.error}` }}
+        </div>
+
+        <h3 class="card-sub" style="margin-top: 14px">备份目标（可多选 = 双线/多线备份）</h3>
+        <div v-for="t in bkTargets" :key="t.path" class="bk-target-row">
+          <input
+            type="checkbox"
+            :checked="t.enabled"
+            @change="toggleTarget(t)"
+          />
+          <span class="bk-target-kind">{{ kindLabel(t.kind) }}</span>
+          <span class="bk-target-path" :title="t.path">{{ t.path }}</span>
+          <span v-if="t.free_gb" class="bk-target-free">{{ t.free_gb }} GB 可用</span>
+          <span v-if="!t.exists" class="bk-target-missing">（目录不存在）</span>
+        </div>
+        <div class="row" style="margin-top: 8px">
+          <input v-model="newTargetPath" placeholder="添加自定义备份目录，如 I:\GALABackup" style="flex: 1" @keyup.enter="addTarget" />
+          <button class="btn small" @click="addTarget">添加</button>
+        </div>
+
+        <h3 class="card-sub" style="margin-top: 14px">自动备份</h3>
         <div class="row">
           <label>启动时自动备份</label>
           <input v-model="cfg.backup.auto_enabled" type="checkbox" />
@@ -170,7 +278,20 @@
           <label>备份间隔（天）</label>
           <input v-model.number="cfg.backup.interval_days" type="number" min="1" max="90" style="flex: 0 0 80px" />
         </div>
-        <p class="hint">自动备份保存在 database/backup/auto_*，保留最近 10 份；手动备份按钮见上方。</p>
+        <div class="row" style="margin-top: 10px">
+          <button class="btn primary" :disabled="bkBusy" @click="backupAllNow">
+            {{ bkBusy ? '备份中…' : '☁ 立即备份全部存档' }}
+          </button>
+          <button class="btn small" @click="bkRefresh">🔄 刷新状态</button>
+        </div>
+        <div v-if="bkResult" class="bk-status">
+          <div v-for="(t, i) in bkResult.targets || []" :key="i" :class="t.ok ? 'ok' : 'fail'">
+            {{ t.label }}：{{ t.ok ? `✓ ${t.overall?.processedGames || 0} 款游戏` : `✗ ${t.error}` }}
+          </div>
+        </div>
+        <p class="hint" style="margin-top: 8px">
+          数据库备份保留最近 10 份在 database/backup/auto_*；存档备份写入上述目标（增量：未变化文件自动跳过）。
+        </p>
       </section>
 
       <div class="actions">
@@ -282,6 +403,7 @@ onMounted(async () => {
   cfg.value = await api.getConfig()
   await store.loadRoots()
   await store.loadMissing()
+  bkRefresh()
 })
 
 async function addRoot() {
@@ -386,6 +508,67 @@ function addProv() {
     model: '', api_key: '', base_url: '',
     vision: false, search: false, enabled: true,
   })
+}
+
+// ---- 存档备份（ludusavi 引擎） ----
+const bkStatus = ref(null)
+const bkTargets = ref([])
+const bkBusy = ref(false)
+const bkResult = ref(null)
+const newTargetPath = ref('')
+const bkEnginePath = ref('')
+
+const kindLabel = (k) => ({ default: '本地', usb: 'U盘', onedrive: 'OneDrive', custom: '自定义' }[k] || k)
+
+async function bkRefresh() {
+  if (cfg.value?.backup?.engine_path) bkEnginePath.value = cfg.value.backup.engine_path
+  const r = await api.backupEngineStatus()
+  bkStatus.value = r
+  bkTargets.value = r.targets || []
+  bkEnginePath.value = r.engine_path || bkEnginePath.value
+}
+
+async function probeEngine() {
+  const p = bkEnginePath.value.trim()
+  if (p) await api.setConfig('backup.engine_path', p)
+  await bkRefresh()
+}
+
+async function toggleTarget(t) {
+  const list = bkTargets.value.map((x) => ({
+    path: x.path, enabled: x.path === t.path ? !x.enabled : x.enabled,
+    label: x.label || x.path,
+  }))
+  const r = await api.backupSetTargets(list)
+  if (r && r.ok) bkTargets.value = r.targets || []
+}
+
+async function addTarget() {
+  const p = newTargetPath.value.trim()
+  if (!p) return
+  const list = bkTargets.value.map((x) => ({
+    path: x.path, enabled: x.enabled, label: x.label || x.path,
+  }))
+  list.push({ path: p, enabled: true, label: '自定义' })
+  const r = await api.backupSetTargets(list)
+  if (r && r.ok) {
+    bkTargets.value = r.targets || []
+    newTargetPath.value = ''
+  }
+}
+
+async function backupAllNow() {
+  await save()
+  bkBusy.value = true
+  bkResult.value = null
+  try {
+    const r = await api.backupAll()
+    bkResult.value = r
+    if (!r.ok && !(r.targets || []).length) alert(r.error || '备份失败')
+    await bkRefresh()
+  } finally {
+    bkBusy.value = false
+  }
 }
 
 async function save() {

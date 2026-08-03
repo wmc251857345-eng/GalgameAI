@@ -77,3 +77,43 @@ def match(cfg, query):
         c["score"] = score_candidate(query, c)
     cands.sort(key=lambda c: c["score"], reverse=True)
     return cands
+
+
+def match_ai(cfg, folder, ai_titles=None, ai_queries=None):
+    """三方互证检索：AI 识别的真名/检索串优先回查 bgm/vndb/steam，
+    原始目录名兜底；候选同时对着【AI 真名】与【原始目录名】打分。
+
+    - folder: 原始目录名（兜底查询 + 打分基准）
+    - ai_titles: AI 识别出的 [title_jp, title_en, title_zh]（打分基准）
+    - ai_queries: AI 建议的检索串（优先查询词，最多 4 条）
+    返回去重后的候选列表（按分降序），每个候选带 matched_key 标记命中的基准。
+    """
+    queries = []
+    for q in list(ai_queries or [])[:4]:
+        q = (q or "").strip()
+        if q and q not in queries:
+            queries.append(q)
+    if folder and folder not in queries:
+        queries.append(folder)
+
+    seen, out = set(), []
+    for q in queries:
+        for c in search_candidates(cfg, q):
+            key = (c.get("provider"), c.get("external_id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(c)
+
+    bases = [t for t in (ai_titles or []) if (t or "").strip()]
+    bases.append(folder)
+    for c in out:
+        best, best_key = 0.0, ""
+        for b in bases:
+            s = score_candidate(b, c)
+            if s > best:
+                best, best_key = s, b
+        c["score"] = best
+        c["matched_key"] = best_key
+    out.sort(key=lambda c: c["score"], reverse=True)
+    return out

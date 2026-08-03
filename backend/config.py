@@ -20,7 +20,11 @@ DEFAULTS = {
     "library_roots": [],
     "ui": {"theme": "dark", "language": "zh-CN"},
     "analysis": {"auto_confirm_threshold": 0.9, "concurrency": 2},
-    "backup": {"auto_enabled": True, "interval_days": 7},
+    "organize": {
+        "enabled": True,
+        "maker_buckets": {},   # 用户手动指定 厂商→桶目录名（覆盖自动学习）
+    },
+    "backup": {"auto_enabled": True, "interval_days": 7, "root": "", "engine_path": "", "targets": []},
 }
 
 

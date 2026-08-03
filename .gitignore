@@ -12,9 +12,11 @@ frontend/dist/
 
 # 本地数据（含 API key）
 config/config.json
+config/ludusavi/
 database/*.db
 database/export/
 database/backup/
+database/ludusavi_backups/
 cache/
 logs/
 

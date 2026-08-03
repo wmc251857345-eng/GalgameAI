@@ -165,6 +165,62 @@
         </details>
       </div>
 
+      <!-- 存档备份 -->
+      <div class="detail-section backup-section">
+        <h2>存档备份</h2>
+        <template v-if="bkEngine && bkEngine.ok">
+          <div class="bk-row">
+            <button class="btn small" :disabled="bkBusy" @click="detectSaves">
+              🔍 自动探测存档位置
+            </button>
+            <button class="btn small primary" :disabled="bkBusy || !savePaths.length" @click="doBackup">
+              {{ bkBusy ? '备份中…' : '☁ 立即备份' }}
+            </button>
+            <button class="btn small danger-soft" :disabled="bkBusy || !bkMeta?.backup_count" @click="doRestore">
+              恢复存档
+            </button>
+          </div>
+          <div v-if="savePaths.length" class="bk-paths">
+            <div v-for="p in savePaths" :key="p" class="bk-path">
+              <span class="bk-path-text">{{ p }}</span>
+              <button class="tag-x" title="移除" @click="removeSavePath(p)">×</button>
+            </div>
+          </div>
+          <div v-else class="bk-hint">
+            {{ candidates.length ? '找到候选，点击路径添加：' : '尚未配置存档路径。点「自动探测」扫描游戏目录 / 文档 / AppData，或手动填写。' }}
+          </div>
+          <div v-if="candidates.length" class="bk-cands">
+            <button
+              v-for="c in candidates"
+              :key="c.path"
+              class="bk-cand"
+              :class="{ hit: c.exists }"
+              :disabled="savePaths.includes(c.path)"
+              @click="addSavePath(c.path)"
+            >
+              <span class="bk-cand-dot">{{ c.exists ? '✓' : '·' }}</span>
+              {{ c.reason }}<span class="bk-cand-path">（{{ c.path }}）</span>
+            </button>
+          </div>
+          <div v-if="bkMeta" class="bk-meta">
+            <span v-if="bkMeta.last_backup_at">上次备份：{{ bkMeta.last_backup_at }}</span>
+            <span v-if="bkMeta.backup_count">已备份 {{ bkMeta.backup_count }} 次</span>
+            <span v-if="bkMeta.total_bytes">约 {{ (bkMeta.total_bytes / 1024).toFixed(0) }} KB</span>
+          </div>
+          <div v-if="bkVersions.length" class="bk-versions">
+            <h3>备份历史</h3>
+            <div v-for="v in bkVersions" :key="v.id" class="bk-version">
+              <span>{{ v.backed_at }}</span>
+              <span v-if="v.bytes">· {{ (v.bytes / 1024).toFixed(0) }} KB</span>
+              <span class="bk-ver-status" :class="v.status">{{ v.status === 'ok' ? '✓' : '✗' }}</span>
+            </div>
+          </div>
+        </template>
+        <div v-else class="bk-hint">
+          {{ bkEngine ? bkEngine.error : '引擎检测中…' }}
+        </div>
+      </div>
+
       <!-- 待确认候选 -->
       <div v-if="g.status === 1 && !editing" class="detail-section">
         <h2>AI 匹配候选（置信度不足，请选择或手动编辑）</h2>
@@ -391,5 +447,97 @@ async function skip() {
 }
 async function toggleLe(e) {
   await api.setLocaleEmu(g.value.id, e.target.checked)
+}
+
+// ---- 存档备份 ----
+const bkEngine = ref(null)
+const bkBusy = ref(false)
+const savePaths = ref([])
+const candidates = ref([])
+const bkMeta = ref(null)
+const bkVersions = ref([])
+
+// 切换游戏时加载备份状态
+watch(() => store.selectedGameId, async () => {
+  bkEngine.value = null
+  candidates.value = []
+  bkVersions.value = []
+  if (!g.value?.id) return
+  try {
+    bkEngine.value = await api.backupEngineStatus()
+  } catch (e) { bkEngine.value = { ok: false, error: '引擎检测失败' } }
+  await loadBackupState()
+})
+
+async function loadBackupState() {
+  if (!g.value?.id) return
+  try {
+    const [pathsR, listR, verR] = await Promise.all([
+      api.backupGetSavePaths(g.value.id),
+      api.backupList(g.value.id),
+      api.backupVersions(g.value.id).catch(() => ({ ok: true, items: [] })),
+    ])
+    savePaths.value = pathsR.paths || []
+    bkMeta.value = (listR.items || [])[0] || null
+    bkVersions.value = verR.items || []
+  } catch (e) {
+    /* 静默 */
+  }
+}
+
+async function detectSaves() {
+  bkBusy.value = true
+  try {
+    const r = await api.backupDetectSavePaths(g.value.id)
+    candidates.value = (r.candidates || []).filter((c) => c.exists)
+    if (!candidates.value.length) alert('没有探测到存档位置，可手动填写路径后添加')
+  } finally {
+    bkBusy.value = false
+  }
+}
+
+async function addSavePath(p) {
+  if (savePaths.value.includes(p)) return
+  savePaths.value.push(p)
+  await api.backupSavePaths(g.value.id, savePaths.value)
+  store.load()
+}
+
+async function removeSavePath(p) {
+  savePaths.value = savePaths.value.filter((x) => x !== p)
+  await api.backupSavePaths(g.value.id, savePaths.value)
+}
+
+async function doBackup() {
+  bkBusy.value = true
+  try {
+    const r = await api.backupGame([g.value.id])
+    if (!r.ok) { alert(r.error || '备份失败'); return }
+    const ov = r.overall || {}
+    const cg = ov.changedGames || {}
+    const parts = []
+    if (cg.new) parts.push(`新增 ${cg.new}`)
+    if (cg.different) parts.push(`更新 ${cg.different}`)
+    if (cg.same) parts.push(`未变化 ${cg.same}`)
+    const tgt = (r.targets || []).filter((t) => t.ok).length
+    alert(`备份完成：${parts.join('，') || '无变化'}，写入 ${tgt} 个目标`)
+    await loadBackupState()
+    store.load()
+  } finally {
+    bkBusy.value = false
+  }
+}
+
+async function doRestore() {
+  if (!confirm('确定从备份恢复存档？会覆盖当前存档文件。')) return
+  bkBusy.value = true
+  try {
+    const r = await api.backupRestoreGame(g.value.id)
+    if (!r.ok) { alert(r.error || '恢复失败'); return }
+    alert('恢复完成')
+    await loadBackupState()
+  } finally {
+    bkBusy.value = false
+  }
 }
 </script>

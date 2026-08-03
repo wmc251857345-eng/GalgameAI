@@ -20,6 +20,7 @@
       <div v-if="game.playtime_hours > 0" class="cover-time">{{ game.playtime_hours }}h</div>
       <div v-if="game.status === 1" class="cover-pending">待确认</div>
       <div v-if="game.status === 3" class="cover-pending cover-skip">已跳过</div>
+      <BackupBadge v-if="game.backup_meta" :meta="game.backup_meta" />
     </div>
     <div class="card-title">{{ game.title }}</div>
     <div class="card-sub">{{ (game.tags || []).slice(0, 3).join(' · ') || game.title_en }}</div>
@@ -27,6 +28,7 @@
 </template>
 
 <script setup>
+import BackupBadge from './BackupBadge.vue'
 defineProps({ game: Object })
 defineEmits(['open', 'fav', 'launch', 'ctx'])
 </script>

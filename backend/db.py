@@ -106,6 +106,45 @@ CREATE TABLE IF NOT EXISTS maker_follows (
     vndb_id TEXT, display_name TEXT,
     created_at TEXT
 );
+
+-- 存档备份：每款游戏的引擎映射 + 备份元数据
+CREATE TABLE IF NOT EXISTS backup_history (
+    game_id INTEGER PRIMARY KEY,     -- → games.id
+    engine_name TEXT,                -- 引擎识别名（custom game 名）
+    save_paths TEXT DEFAULT '[]',    -- JSON: 手动配置的存档路径列表（custom games files）
+    last_backup_at TEXT,             -- 上次备份时间 ISO
+    last_save_change_at TEXT,        -- 存档源最近变动时间 ISO（扫描时取 max mtime）
+    total_bytes INTEGER DEFAULT 0,   -- 上次备份总大小
+    backup_count INTEGER DEFAULT 0   -- 累计备份次数
+);
+CREATE TABLE IF NOT EXISTS backup_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id INTEGER,                 -- → games.id
+    backed_at TEXT,                  -- 备份时间 ISO
+    engine_when TEXT,                -- 引擎报告的时间戳
+    bytes INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'ok'         -- ok|failed
+);
+CREATE INDEX IF NOT EXISTS idx_backup_versions_game ON backup_versions(game_id);
+
+-- 扫描历史：每次扫描的记录（新增游戏清单/总数/失效数），供前端展示"本次新增 N 款"
+CREATE TABLE IF NOT EXISTS scan_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT, ended_at TEXT,
+    roots TEXT DEFAULT '[]',             -- JSON: 本次扫描的根目录
+    new_count INTEGER DEFAULT 0,         -- 本次新增游戏数
+    total_count INTEGER DEFAULT 0,       -- 扫描后库内总数
+    missing_count INTEGER DEFAULT 0,     -- exe 失效数
+    new_games TEXT DEFAULT '[]'          -- JSON: [{id, title, path}]
+);
+
+-- 目录整理历史：自动整理引擎的移动记录
+CREATE TABLE IF NOT EXISTS organize_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    game_id INTEGER, title TEXT,
+    from_path TEXT, to_path TEXT,
+    moved_at TEXT, ok INTEGER DEFAULT 1
+);
 """
 
 

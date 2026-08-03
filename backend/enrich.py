@@ -69,9 +69,12 @@ def download_cover(cfg, game_id, url, fallback_local=None):
     return None
 
 
-def _apply_match(cfg, db, game, cand, async_enrich=False):
+def _apply_match(cfg, db, game, cand, async_enrich=False, ai_extra=None):
     """把候选应用到 game：填字段、下载封面。async_enrich=True 时 AI 润色后台执行
-    （用于桥接线程内的确认操作，避免同步等 LLM 卡死界面）。"""
+    （用于桥接线程内的确认操作，避免同步等 LLM 卡死界面）。
+    ai_extra（可选）：三方互证中 AI 识别出的 {title_zh, summary, tags}，
+    与数据库候选合并——DB 管评分/时长/封面，AI 管中文译名/简介/题材标签；
+    有 ai_extra 时跳过重复的 AI 润色调用（省 token）。"""
     from . import makers
     cover_path = download_cover(cfg, game["id"], cand.get("cover_url"),
                                 game.get("cover_local"))
@@ -83,19 +86,36 @@ def _apply_match(cfg, db, game, cand, async_enrich=False):
         rating = round(rating / 10, 2)
     # 制作组名自动锚定：中/英/日文写法统一到规范名（数据库级合并，不再各写各的）
     maker = makers.canonical(db, cand.get("maker") or "")
+    title_zh = (ai_extra or {}).get("title_zh") or None
+    summary = (ai_extra or {}).get("summary") or cand.get("summary") or ""
+    source = cand["provider"] + ("+ai" if ai_extra else "")
     db.execute(
-        """UPDATE games SET title=?, title_en=?, title_jp=?, maker=?, released=?,
+        """UPDATE games SET title=?, title_en=?, title_jp=?, title_zh=?, maker=?, released=?,
            rating=?, description=?, cover_path=?, cover_url=?, vndb_id=?, bgm_id=?,
            steam_id=?, length_level=?, length_minutes=?, status=2, match_confidence=?, source=?
            WHERE id=?""",
         (cand.get("title") or game["title"],
          cand.get("title") or "", cand.get("title_orig") or "",
-         maker, cand.get("released") or "",
-         rating, cand.get("summary") or "",
+         title_zh, maker, cand.get("released") or "",
+         rating, summary,
          cover_path, cand.get("cover_url") or "",
          vndb_id, bgm_id, steam_id,
          cand.get("length_level"), cand.get("length_minutes"),
-         cand["score"], cand["provider"], game["id"]))
+         cand["score"], source, game["id"]))
+    # AI 中文题材标签并入（DB 候选自带英文/日文标签，AI 标签是中文的，不冲突）
+    for t in (ai_extra or {}).get("tags") or []:
+        t = (t or "").strip()
+        if not t:
+            continue
+        db.execute("INSERT OR IGNORE INTO tags (name, category) VALUES (?, 'ai')", (t,))
+        row = db.query_one("SELECT id FROM tags WHERE name=?", (t,))
+        if row:
+            db.execute(
+                "INSERT OR IGNORE INTO game_tags (game_id, tag_id, source) VALUES (?,?,'ai')",
+                (game["id"], row["id"]))
+    if ai_extra or cand.get("provider") == "ai":
+        # AI 识别已产出中文简介/标签 → 不再重复调 LLM 润色（省 token、防卡死）
+        return
     if async_enrich:
         threading.Thread(target=_enrich_ai, args=(cfg, db, game, cand), daemon=True).start()
     else:
@@ -145,7 +165,7 @@ def _enrich_ai(cfg, db, game, cand):
 
 
 AI_IDENTIFY_SYSTEM = (
-    "你是 Galgame 数据库专家，熟悉日系视觉小说全目录。"
+    "你是 Galgame 数据库专家，熟悉日系视觉小说全目录，可联网搜索实时资料。"
     "只输出合法 JSON，不要任何多余文字。"
 )
 
@@ -154,11 +174,23 @@ AI_IDENTIFY_USER = """根据已知信息识别这部 Galgame，输出 JSON：
   "maker": "制作公司", "released": "YYYY-MM-DD(不确定给年份即可,不知道给空)",
   "tags_zh": ["3-6个中文题材标签，如 纯爱/废萌/母系/悬疑/实用/催泪"],
   "summary_zh": "80-150字中文简介", "vndb_id": "VNDB条目ID(形如v12345,不知道给空)",
-  "confidence": 0到1的匹配置信度}}
+  "search_queries": ["2-4条用于在 VNDB/Bangumi 检索此游戏的关键词串，优先日文原名/罗马音名/官方英文名，便于数据库精确命中；汉化或译名目录时必须给出原名，如 后宫绮梦 → [\"Kōkyū Kiteki\", \"后宫绮梦\"]"],
+  "is_indie": true或false,  "confidence": 0到1的匹配置信度}}
 已知信息：
 目录名: {folder}
 {extra}
-如果这些信息不足以确定是哪个游戏，confidence 给低于 0.3，并尽量给出最可能的推测。"""
+如果这些信息不足以确定是哪个游戏，confidence 给低于 0.3，并尽量给出最可能的推测。
+你可以联网搜索确认资料（尤其汉化/译名目录的真实原名、独立游戏是否有收录）。"""
+
+
+def _ai_search_enabled(cfg):
+    """AI 识别是否启用联网搜索接地：活动 provider 或池中任一带 search 标志。"""
+    if cfg.get("provider.search"):
+        return True
+    for p in cfg.get("providers", []) or []:
+        if p.get("enabled", True) and p.get("search"):
+            return True
+    return False
 
 
 def _parent_hint(game):
@@ -182,7 +214,8 @@ def _parent_hint(game):
 
 
 def _ai_identify(cfg, db, game):
-    """AI 主通道识别：目录名 + 上级目录(厂商线索) + readme + 本地封面(视觉)。返回候选 dict 或 None。"""
+    """AI 主通道识别：目录名 + 上级目录(厂商线索) + readme + 本地封面(视觉) + 联网搜索。
+    返回候选 dict 或 None；候选带 search_queries（回查双库的检索串）与 is_indie 标记。"""
     from .providers import llm
     extra = []
     text = (game.get("text_sample") or "").strip()
@@ -196,7 +229,8 @@ def _ai_identify(cfg, db, game):
     vision = None
     if game.get("cover_local") and os.path.exists(game["cover_local"]):
         vision = llm.image_to_b64(game["cover_local"])
-    res, err = llm.chat_json(cfg, AI_IDENTIFY_SYSTEM, user, vision_image=vision)
+    res, err = llm.chat_json(cfg, AI_IDENTIFY_SYSTEM, user, vision_image=vision,
+                             search=_ai_search_enabled(cfg))
     if err:
         _log(f"    AI 识别失败: {err}")
         return None
@@ -211,6 +245,7 @@ def _ai_identify(cfg, db, game):
         conf = 0.0
     if not title_jp and not title_en and not title_zh:
         return None
+    queries = [q for q in (res.get("search_queries") or []) if (q or "").strip()][:4]
     cand = {
         "provider": "ai",
         "external_id": "ai",
@@ -225,13 +260,21 @@ def _ai_identify(cfg, db, game):
         "tags": [t.strip() for t in (res.get("tags_zh") or []) if t.strip()][:8],
         "score": round(min(max(conf, 0.0), 1.0), 3),
         "vndb_id": (res.get("vndb_id") or "").strip() or None,
+        "search_queries": queries,
+        "is_indie": bool(res.get("is_indie")),
     }
     return cand
 
 
 def _analyze_one(cfg, db, game):
-    """识别流程：用户纠正记忆(match_cache) → AI 识别 → bgm/vndb/steam 候选。"""
-    from .matcher import match
+    """三方互证识别流程：记忆命中 → AI 主识别(联网+识图) → AI真名回查双库 → 对账评分。
+
+    印证规则：
+    - AI 声称的 vndb_id 拉取验证成功 → 强印证，直接入库（AI 定位 + VNDB 认证）
+    - 数据库候选高分（目录名/AI真名命中）→ 入库，AI 的中文译名/简介/标签合并
+    - AI 高分但双库无印证 → 一律待确认（防 AI 幻觉自动入库）
+    """
+    from .matcher import match_ai, score_candidate
     from .providers import bgm, steam, vndb
     from .utils import normalize
     thr = cfg.get("analysis.auto_confirm_threshold", 0.9)
@@ -256,37 +299,107 @@ def _analyze_one(cfg, db, game):
                 _apply_match(cfg, db, game, cand)
                 return {"status": 2, "matched": cand.get("title"), "score": 1.0, "from_cache": True}
 
-    # AI 识别：已在 _ANALYZE_GAVE_UP 里的游戏跳过 LLM 调用（防 analyze_all 反复烧 token，
-    # 仍走免费的 bgm/vndb 候选；进程重启清空 → 每会话给一次重试机会）
+    # 1) AI 主识别（侦察兵）：已在 _ANALYZE_GAVE_UP 里的游戏跳过 LLM 调用
     ai_cand = None
     if game["id"] not in _ANALYZE_GAVE_UP:
         ai_cand = _ai_identify(cfg, db, game)
         if ai_cand is None:
             _ANALYZE_GAVE_UP.add(game["id"])  # 识别不出 → 本会话不再问 AI
+
+    # AI 真名/检索串 → 回查双库（认证官）；原始目录名兜底
+    folder = game["title"]
+    ai_titles, ai_queries = [], []
+    if ai_cand:
+        ai_titles = [t for t in (ai_cand.get("title_orig"), ai_cand.get("title"))
+                     if (t or "").strip()]
+        ai_titles += [t for t in (ai_cand.get("aliases") or []) if (t or "").strip()]
+        ai_queries = ai_cand.get("search_queries") or []
     web_cands = []
     try:
-        web_cands = match(cfg, game["title"])
+        web_cands = match_ai(cfg, folder, ai_titles, ai_queries)
     except Exception:
         pass
 
-    cands = ([ai_cand] if ai_cand else []) + web_cands
+    # 2) 三方对账
+    evidence = {}
+    if ai_cand:
+        evidence["ai"] = {"score": ai_cand["score"], "title": ai_cand.get("title"),
+                          "vndb_id_claim": ai_cand.get("vndb_id"),
+                          "is_indie": ai_cand.get("is_indie")}
+    best_db = web_cands[0] if web_cands else None
+    db_score = best_db["score"] if best_db else 0.0
+
+    # S1: AI 声称的 vndb_id → 直接按 ID 拉取验证（最强印证）
+    claimed_cand = None
+    if ai_cand and ai_cand.get("vndb_id"):
+        c, err = vndb.get(cfg, ai_cand["vndb_id"])
+        if c and err is None:
+            s = max([score_candidate(t, c) for t in ai_titles] + [0.0])
+            if s >= 0.6:  # 拉出来的条目与 AI 真名对得上
+                claimed_cand = c
+                claimed_cand["score"] = max(ai_cand["score"], 0.85)
+                claimed_cand["external_id"] = ai_cand["vndb_id"]
+                evidence["vndb"] = {"id_claim_verified": True, "score": s}
+
+    # S3: VNDB 与 BGM 双库互证（同一游戏两库都命中）
+    cross = False
+    if not claimed_cand:
+        vndb_cands = [c for c in web_cands if c["provider"] == "vndb"]
+        bgm_cands = [c for c in web_cands if c["provider"] == "bgm"]
+        for v in vndb_cands:
+            for b in bgm_cands:
+                if (normalize(v.get("title_orig")) and
+                        normalize(v.get("title_orig")) == normalize(b.get("title_orig"))):
+                    cross = True
+                    evidence.setdefault("cross", []).append((v["external_id"], b["external_id"]))
+    evidence["cross"] = bool(evidence.get("cross"))
+
+    # AI 真名命中数据库候选（S2，用于判定 AI 与 DB 是否指向同一游戏）
+    ai_hit_db = bool(ai_titles) and any(
+        score_candidate(t, c) >= 0.6 for t in ai_titles for c in web_cands[:3])
+
+    ai_extra = None
+    if ai_cand:
+        ai_extra = {"title_zh": (ai_cand.get("title") or "").strip() or None,
+                    "summary": ai_cand.get("summary") or "",
+                    "tags": ai_cand.get("tags") or []}
+
+    chosen = None
+    note = ""
+    if claimed_cand:
+        chosen, note = claimed_cand, "AI声称ID+VNDB条目印证"
+    elif best_db and db_score >= thr:
+        chosen, note = best_db, f"{best_db['provider']}高分命中({db_score})"
+        if cross:
+            note += "+双库互证"
+        if ai_hit_db:
+            note += "+AI真名印证"
+    elif ai_cand and ai_cand["score"] >= thr and (ai_hit_db or cross):
+        chosen = best_db if (best_db and best_db["score"] >= 0.6) else ai_cand
+        note = "AI高分+数据库印证"
+    if chosen and chosen.get("provider") == "ai":
+        ai_extra = None  # 纯 AI 入库: 字段本就来自 AI；且 _apply_match 会跳过重复润色
+
+    # 3) 落库候选（供待确认页展示；AI 候选排前）
     db.execute("DELETE FROM match_candidates WHERE game_id=?", (game["id"],))
-    for c in cands[:6]:
+    cands = ([ai_cand] if ai_cand else []) + web_cands
+    for i, c in enumerate(cands[:6]):
+        payload = dict(c)
+        if chosen and c is chosen:
+            payload["evidence"] = note
         db.execute(
             "INSERT INTO match_candidates (game_id, provider, external_id, title, score, payload)"
             " VALUES (?,?,?,?,?,?)",
             (game["id"], c["provider"], c["external_id"], c.get("title") or "",
-             c["score"], json.dumps(c, ensure_ascii=False)))
-    if not cands:
-        db.execute("UPDATE games SET status=1 WHERE id=?", (game["id"],))
-        return {"status": 1, "reason": "no_candidates"}
+             c["score"], json.dumps(payload, ensure_ascii=False)))
 
-    best = cands[0]
-    if best["score"] >= thr:
-        _apply_match(cfg, db, game, best)
-        return {"status": 2, "matched": best.get("title"), "score": best["score"]}
-    db.execute("UPDATE games SET status=1 WHERE id=?", (game["id"],))
-    return {"status": 1, "matched": best.get("title"), "score": best["score"]}
+    if not chosen:
+        db.execute("UPDATE games SET status=1 WHERE id=?", (game["id"],))
+        return {"status": 1, "reason": "no_strong_match", "evidence": evidence}
+
+    _apply_match(cfg, db, game, chosen, async_enrich=False, ai_extra=ai_extra)
+    return {"status": 2, "matched": chosen.get("title"), "score": chosen["score"],
+            "evidence": evidence, "note": note}
 
 
 def _run_one_job(cfg, db, game):
@@ -310,11 +423,23 @@ def _run_one_job(cfg, db, game):
             ONE_JOB.update(running=False, stage="idle", result=None, error=str(e))
 
 
+def _count_missing(db):
+    """exe/目录已失效的游戏数（移动/改名/删除过）。"""
+    n = 0
+    for g in db.query("SELECT path FROM games"):
+        p = (g.get("path") or "").strip()
+        if p and not os.path.isdir(p):
+            n += 1
+    return n
+
+
 def scan_all(cfg, db):
     if STATE["running"]:
         return
-    _set(running=True, stage="scan", total=0, done=0, current="", error=None, cancel_requested=False)
+    _set(running=True, stage="scan", total=0, done=0, current="", error=None,
+         cancel_requested=False, last_scan=None)
     new_paths = []
+    started = now_iso()
     try:
         from .scanner import scan_root
         roots = cfg.get("library_roots", [])
@@ -336,6 +461,30 @@ def scan_all(cfg, db):
         if new_paths and not STATE.get("cancel_requested"):
             _log(f"扫描完成，自动分析 {len(new_paths)} 个新增游戏…")
             _auto_analyze_new(cfg, db, new_paths)
+        # 记录扫描历史（分析完成后写，带最终状态）→ 前端"本次新增 N 款"汇总
+        new_games = []
+        for p in new_paths:
+            g = db.query_one("SELECT id, title, path, status FROM games WHERE path=?"
+                             " ORDER BY id DESC LIMIT 1", (p,))
+            if g:
+                new_games.append({"id": g["id"], "title": g["title"],
+                                  "path": g["path"], "status": g["status"]})
+        ended = now_iso()
+        total = db.query_one("SELECT COUNT(*) c FROM games")["c"]
+        missing = _count_missing(db)
+        try:
+            sh_id = db.execute(
+                "INSERT INTO scan_history (started_at, ended_at, roots, new_count,"
+                " total_count, missing_count, new_games) VALUES (?,?,?,?,?,?,?)",
+                (started, ended, json.dumps(cfg.get("library_roots", []), ensure_ascii=False),
+                 len(new_games), total, missing,
+                 json.dumps(new_games, ensure_ascii=False)))
+        except Exception as e:
+            _log(f"扫描历史记录失败: {e}")
+            sh_id = None
+        _set(last_scan={"id": sh_id, "started_at": started, "ended_at": ended,
+                        "new_count": len(new_games), "total_count": total,
+                        "missing_count": missing, "new_games": new_games})
         _set(running=False, stage="idle", current="")
 
 

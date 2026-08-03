@@ -76,8 +76,11 @@ def _run_pool(cfg, body, timeout):
     return None, last or RuntimeError("所有 AI 提供商均不可用"), None
 
 
-def chat(cfg, messages, json_mode=True, vision_image=None, timeout=40):
-    """对话（可选 JSON 模式 / 视觉），自动轮询多个提供商。"""
+def chat(cfg, messages, json_mode=True, vision_image=None, timeout=40, search=False):
+    """对话（可选 JSON 模式 / 视觉 / 联网搜索），自动轮询多个提供商。
+    search=True 时追加 Google 搜索接地（Gemini 风格 tools）；提供商不支持
+    （HTTP 400）则自动去掉重试，优雅降级为纯对话。
+    """
     if not any(p["api_key"] for p in _provider_pool(cfg)):
         return None, "未配置 API Key"
     body = {
@@ -85,6 +88,8 @@ def chat(cfg, messages, json_mode=True, vision_image=None, timeout=40):
         "messages": messages,
         "temperature": 0.3,
     }
+    if search:
+        body["tools"] = [{"google_search": {}}]  # Gemini 联网搜索接地
     if vision_image:
         last = messages[-1]
         body["messages"][-1] = {
@@ -103,17 +108,23 @@ def chat(cfg, messages, json_mode=True, vision_image=None, timeout=40):
         if json_mode and "response_format" in body and "400" in str(err):
             body.pop("response_format", None)
             resp, err, _ = _run_pool(cfg, body, timeout)
+        # 不支持搜索接地（非 Gemini 兼容端点）→ 去掉 tools 重试一轮
+        if err is not None and search and "tools" in body and "400" in str(err):
+            body.pop("tools", None)
+            body.pop("response_format", None)  # 部分端点 tools 与 json 模式互斥
+            resp, err, _ = _run_pool(cfg, body, timeout)
         if err is not None:
             return None, err
     return resp, None
 
 
-def chat_json(cfg, system, user, vision_image=None, timeout=40):
+def chat_json(cfg, system, user, vision_image=None, timeout=40, search=False):
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    resp, err = chat(cfg, messages, json_mode=True, vision_image=vision_image, timeout=timeout)
+    resp, err = chat(cfg, messages, json_mode=True, vision_image=vision_image,
+                     timeout=timeout, search=search)
     if err or not resp:
         return None, err
     try:

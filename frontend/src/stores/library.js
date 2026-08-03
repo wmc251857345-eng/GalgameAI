@@ -35,6 +35,8 @@ export const useLibraryStore = defineStore('library', {
     pendingLoading: false,
     roots: [],
     scan: { running: false, stage: 'idle', total: 0, done: 0, current: '', error: null, log: [] },
+    lastScan: null,   // 最近一次扫描结果汇总 {new_count, new_games:[{id,title,status}], ...}
+    organize: { plan: null, applying: false, results: null, error: null, history: [] },
     runningGames: {},
   }),
 
@@ -100,9 +102,14 @@ export const useLibraryStore = defineStore('library', {
     async load() {
       this.loading = true
       try {
-        const [games, summary, facets] = await Promise.all([
+        const [games, summary, facets, bk] = await Promise.all([
           api.listGames(), api.getLibrarySummary(), api.getLibraryFacets(),
+          api.backupList().catch(() => ({ ok: true, items: [] })),
         ])
+        // 合并备份元数据到游戏对象（卡片徽章用）
+        const bkMap = {}
+        for (const it of bk.items || []) bkMap[it.game_id] = it
+        for (const g of games) g.backup_meta = bkMap[g.id] || null
         this.games = games
         this.summary = summary
         this.facets = facets
@@ -303,6 +310,56 @@ export const useLibraryStore = defineStore('library', {
       await api.cancelTask()
     },
 
+    // ---- 目录自动整理 ----
+    async generateOrganizePlan() {
+      this.organize.applying = true
+      this.organize.error = null
+      try {
+        const r = await api.organizePlan()
+        if (r && r.ok) {
+          this.organize.plan = r.items || []
+          this.organize.results = null
+        } else {
+          this.organize.error = (r && r.error) || '整理计划生成失败'
+          this.organize.plan = null
+        }
+      } catch (e) {
+        this.organize.error = e.message || '整理计划生成失败'
+      } finally {
+        this.organize.applying = false
+      }
+    },
+
+    async applyOrganizePlan(items) {
+      if (!items || !items.length) return
+      this.organize.applying = true
+      this.organize.error = null
+      try {
+        const r = await api.organizeApply(items)
+        if (r && r.ok) {
+          this.organize.results = r.results || []
+          this.organize.plan = null
+          this.loadOrganizeHistory()
+          await this.load()
+          if (this.organize.results.some((x) => !x.ok)) {
+            this.organize.error = this.organize.results.filter((x) => !x.ok)
+              .map((x) => `${x.title || x.game_id}: ${x.error}`).join('；')
+          }
+        } else {
+          this.organize.error = (r && r.error) || '整理执行失败'
+        }
+      } catch (e) {
+        this.organize.error = e.message || '整理执行失败'
+      } finally {
+        this.organize.applying = false
+      }
+    },
+
+    async loadOrganizeHistory() {
+      const r = await api.getOrganizeHistory()
+      if (r && r.ok) this.organize.history = r.items || []
+    },
+
     pollScan() {
       // 轮询扫描/分析进度，直到结束
       const tick = async () => {
@@ -311,6 +368,7 @@ export const useLibraryStore = defineStore('library', {
           setTimeout(tick, 800)
         } else {
           if (this.scan.error) alert(`任务出错: ${this.scan.error}`)
+          if (this.scan.last_scan) this.lastScan = this.scan.last_scan
           await Promise.all([this.load(), this.loadPending()])
         }
       }
