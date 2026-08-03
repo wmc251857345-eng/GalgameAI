@@ -2083,20 +2083,23 @@ class JsApi:
         return {"ok": True, "follows": rows}
 
     # ---------- AI 管家对话 ----------
-    def chat_send(self, message, context_game_id=None):
-        """发送一条消息给 AI 管家（工具调用式），返回回复+动作记录。"""
+    def chat_send(self, message, context_game_id=None, image=None):
+        """发送一条消息给 AI 管家（工具调用式 + 可选图片识图），返回回复+动作记录。
+        image: 可选，base64 data URL（如 data:image/jpeg;base64,...），随消息发给 LLM 识图。"""
         message = (message or "").strip()
-        if not message:
+        if not message and not image:
             return {"ok": False, "error": "消息为空"}
         if self._agent is None:
             from .agent import AgentService
             self._agent = AgentService(self._db, self._cfg)
         self._db.execute(
-            "INSERT INTO chat_messages (role, content, created_at) VALUES ('user',?,?)",
-            (message, now_iso()))
-        history = [{"role": r["role"], "content": r["content"]} for r in self._db.query(
-            "SELECT role, content FROM chat_messages ORDER BY id DESC LIMIT 12")][::-1]
-        result = self._agent.chat(message, context_game_id=context_game_id, history=history)
+            "INSERT INTO chat_messages (role, content, image, created_at) VALUES ('user',?,?,?)",
+            (message, image or None, now_iso()))
+        history = [{"role": r["role"], "content": r["content"], "image": r.get("image")}
+                   for r in self._db.query(
+                       "SELECT role, content, image FROM chat_messages ORDER BY id DESC LIMIT 12")][::-1]
+        result = self._agent.chat(message, context_game_id=context_game_id,
+                                  history=history, image=image)
         reply = (result.get("reply") or "").strip()
         self._db.execute(
             "INSERT INTO chat_messages (role, content, created_at) VALUES ('assistant',?,?)",
@@ -2105,7 +2108,7 @@ class JsApi:
 
     def chat_history(self, limit=30):
         rows = self._db.query(
-            "SELECT role, content, created_at FROM chat_messages ORDER BY id DESC LIMIT ?",
+            "SELECT role, content, image, created_at FROM chat_messages ORDER BY id DESC LIMIT ?",
             (int(limit),))
         return list(reversed(rows))
 

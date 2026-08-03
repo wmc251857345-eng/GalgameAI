@@ -110,8 +110,8 @@ with sync_playwright() as p:
     page.locator(".nav-item", has_text="AI 管家").click(force=True)
     page.wait_for_selector(".ctx-search-input", timeout=8000)
     check("聊天页渲染", page.locator(".ctx-search-input").count() > 0
-          and "选一个游戏作为聊天上下文" in (page.locator(".ctx-search-input")
-                                             .get_attribute("placeholder") or ""), "")
+          and "选一个游戏作为上下文" in (page.locator(".ctx-search-input")
+                                          .get_attribute("placeholder") or ""), "")
     page.locator(".ctx-search-input").fill("千恋")
     page.wait_for_selector(".ctx-drop-item", timeout=5000)
     check("上下文候选下拉", page.locator(".ctx-drop-item").count() > 0,
@@ -119,7 +119,7 @@ with sync_playwright() as p:
     page.locator(".ctx-drop-item").first.click()
     page.wait_for_selector(".ctx-card", timeout=5000)
     body = page.inner_text("body")
-    check("聊天上下文选择生效", "现在说「这个游戏…」" in body and "改标题" in body, body[:60])
+    check("聊天上下文选择生效", "说「这个游戏」就是指它" in body and "改标题" in body, body[:60])
 
     print(f"JS 错误数: {len(errors)}")
     for e in errors[:8]:

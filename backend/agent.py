@@ -402,7 +402,7 @@ class AgentService:
                  "不是", "改回", "改名为", "合并", "是一个社", "一家")
         return any(h in (message or "") for h in hints)
 
-    def chat(self, message, context_game_id=None, history=None):
+    def chat(self, message, context_game_id=None, history=None, image=None):
         from .providers import llm
         msgs = [{"role": "system", "content": SYSTEM_PROMPT}]
         if context_game_id:
@@ -412,8 +412,23 @@ class AgentService:
                     f"\n当前用户正在查看的游戏：《{g['title']}》（id={context_game_id}）。"
                     "用户提到「这个游戏」时默认指它。")
         for m in (history or [])[-12:]:
-            msgs.append({"role": m.get("role") or "user", "content": m.get("content") or ""})
-        msgs.append({"role": "user", "content": message})
+            role = m.get("role") or "user"
+            content = m.get("content") or ""
+            img = m.get("image")
+            if img:
+                msgs.append({"role": role, "content": [
+                    {"type": "text", "text": content},
+                    {"type": "image_url", "image_url": {"url": img}},
+                ]})
+            else:
+                msgs.append({"role": role, "content": content})
+        if image:
+            msgs.append({"role": "user", "content": [
+                {"type": "text", "text": message},
+                {"type": "image_url", "image_url": {"url": image}},
+            ]})
+        else:
+            msgs.append({"role": "user", "content": message})
 
         actions = []
         import time as _t

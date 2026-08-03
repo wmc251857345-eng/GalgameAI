@@ -446,12 +446,12 @@ export const api = {
   },
 
   // AI 管家对话
-  async chatSend(message, contextGameId) {
+  async chatSend(message, contextGameId, image) {
     if (hasBridge()) {
-      return withTimeout(window.pywebview.api.chat_send(message, contextGameId), 180000, '管家回复')
+      return withTimeout(window.pywebview.api.chat_send(message, contextGameId, image || ''), 180000, '管家回复')
     }
     await delay(1500)
-    return { ok: true, reply: '(mock) 管家回复', actions: [] }
+    return { ok: true, reply: image ? '(mock) 已收到图片，这是一张截图。' : '(mock) 管家回复', actions: [] }
   },
 
   async chatHistory() {

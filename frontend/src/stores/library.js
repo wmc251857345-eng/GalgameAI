@@ -388,23 +388,40 @@ export const useLibraryStore = defineStore('library', {
       this.chat.messages = await api.chatHistory()
     },
 
-    async chatSend(text) {
-      if (!text.trim() || this.chat.sending) return
+    async chatSend(text, image) {
+      if (!text.trim() && !image) return
+      if (this.chat.sending) return
       this.chat.sending = true
-      this.chat.messages.push({ role: 'user', content: text, created_at: new Date().toISOString() })
+      this.chat.messages.push({ role: 'user', content: text, image: image || null, created_at: new Date().toISOString() })
       try {
-        const r = await api.chatSend(text, this.chat.contextGame?.id)
+        const r = await api.chatSend(text, this.chat.contextGame?.id, image || '')
+        const ok = !!(r && r.ok)
         this.chat.messages.push({
           role: 'assistant',
-          content: r?.ok ? r.reply : (r?.error || '发送失败'),
-          actions: (r && r.actions) || [],
+          content: ok ? r.reply : (r?.error || '发送失败'),
+          actions: ok ? (r.actions || []) : [],
+          error: !ok,
           created_at: new Date().toISOString(),
         })
       } catch (e) {
-        this.chat.messages.push({ role: 'assistant', content: e.message || '请求失败', actions: [] })
+        this.chat.messages.push({ role: 'assistant', content: e.message || '请求失败', actions: [], error: true, created_at: new Date().toISOString() })
       } finally {
         this.chat.sending = false
       }
+    },
+
+    // 重试：回退到最后一条用户消息重新发送（删除其后所有消息）
+    async chatRetry() {
+      const msgs = this.chat.messages
+      let lastUser = -1
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'user') { lastUser = i; break }
+      }
+      if (lastUser < 0 || this.chat.sending) return
+      const text = msgs[lastUser].content
+      const image = msgs[lastUser].image || null
+      this.chat.messages = msgs.slice(0, lastUser)
+      await this.chatSend(text, image)
     },
 
     async chatClear() {

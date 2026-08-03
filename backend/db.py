@@ -191,6 +191,9 @@ class Database:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(match_cache)")}
         if "provider" not in cols:
             conn.execute("ALTER TABLE match_cache ADD COLUMN provider TEXT DEFAULT 'vndb'")
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(chat_messages)")}
+        if "image" not in cols:
+            conn.execute("ALTER TABLE chat_messages ADD COLUMN image TEXT")
 
     def query(self, sql, params=()):
         with self._lock:
