@@ -33,8 +33,8 @@ with sync_playwright() as p:
     cards = page.locator(".game-card, .list-row").count()
     check("库网格渲染", cards > 0, f"{cards} 卡")
 
-    # 2. 详情页（cover-grad 占位子元素会拦截命中校验，用 force）
-    page.locator(".game-card, .list-row").first.click(force=True)
+    # 2. 详情页（cover-hover 覆盖层会拦截卡片中心 force 点击 → 点卡片标题区，安全且真实）
+    page.locator(".game-card .card-title").first.click()
     page.wait_for_selector("text=返回游戏库", timeout=8000)
     check("详情页渲染", True)
     page.locator("text=返回游戏库").first.click(force=True)
@@ -58,7 +58,8 @@ with sync_playwright() as p:
     saved = page.locator(".content").evaluate(
         "el => { el.scrollTop = el.scrollHeight; return el.scrollTop }")
     page.wait_for_timeout(300)
-    page.locator(".game-card, .list-row").first.click(force=True)
+    # 滚动后第一张卡仍在视口内但封面被 hover 覆盖层拦截 → 点其标题区
+    page.locator(".game-card .card-title").first.click()
     page.wait_for_selector("text=返回游戏库", timeout=8000)
     page.locator("text=返回游戏库").first.click(force=True)
     page.wait_for_timeout(700)
