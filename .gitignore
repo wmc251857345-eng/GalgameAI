@@ -23,3 +23,8 @@ logs/
 # 编辑器
 .idea/
 .vscode/
+
+# 本机杂项（不入库）
+Hermeshermes_portable.hermes/
+research_h3/
+desktop.ini
