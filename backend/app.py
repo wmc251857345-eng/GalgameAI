@@ -123,8 +123,33 @@ def _start_tray(window):
     icon.run_detached()
 
 
+def _single_instance():
+    """Windows 命名互斥体：防多开（用户双击两次 exe 时只保留一个实例，
+    避免双实例并发写同一 SQLite 造成锁/损坏）。
+
+    返回 False = 已有实例在运行。句柄用模块级变量持有到进程退出，
+    防止被 GC 回收导致互斥失效；进程退出时由 OS 自动释放。
+    """
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.CreateMutexW(None, False, "Local\\GALA_SingleInstance")
+        if not handle:
+            return True  # 创建失败（权限等）不阻塞启动
+        if ctypes.c_ulong(kernel32.GetLastError()).value == 183:  # ERROR_ALREADY_EXISTS
+            return False
+        globals()["_gala_mutex"] = handle
+        return True
+    except Exception:
+        return True  # 非 Windows / 异常时不阻塞
+
+
 def main():
     _setup_logging()
+    if not _single_instance():
+        print("[GALA] 已有实例在运行，本次启动退出")
+        logging.info("检测到已有实例在运行，本次启动退出")
+        return
     try:
         import webview
     except Exception as e:

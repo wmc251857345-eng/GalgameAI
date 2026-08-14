@@ -1459,6 +1459,54 @@ class JsApi:
             (int(game_id),))
         return {"ok": True, "items": rows}
 
+    # ---------- GALA 版本快照（关游戏自动备份 / 详情页时间线） ----------
+    def backup_snapshot_root(self):
+        """快照根目录（设置页展示）。"""
+        from . import backup as B
+        return {"ok": True, "root": B.SNAPSHOT_ROOT, "keep": B.SNAPSHOT_KEEP}
+
+    def backup_snapshot_game(self, game_id):
+        """立即手动备份该游戏存档（版本快照）。"""
+        from . import backup as B
+        g = self._db.query_one("SELECT * FROM games WHERE id=?", (int(game_id),))
+        if not g:
+            return {"ok": False, "error": "游戏不存在"}
+        return B.snapshot_backup(self._db, g, kind="manual")
+
+    def backup_snapshot_versions(self, game_id):
+        """版本时间线（新→旧）：ts/时间/大小/类型(auto|manual)。"""
+        from . import backup as B
+        return {"ok": True, "items": B.snapshot_versions(self._db, int(game_id))}
+
+    def backup_snapshot_restore(self, game_id, ts):
+        """恢复指定版本（当前状态自动先存一份保险）。"""
+        from . import backup as B
+        g = self._db.query_one("SELECT * FROM games WHERE id=?", (int(game_id),))
+        if not g:
+            return {"ok": False, "error": "游戏不存在"}
+        return B.snapshot_restore(self._db, g, str(ts))
+
+    def backup_snapshot_import(self, game_id):
+        """导入存档：先选目录，取消则改选文件，复制到游戏存档目录。"""
+        import webview
+        from . import backup as B
+        g = self._db.query_one("SELECT * FROM games WHERE id=?", (int(game_id),))
+        if not g:
+            return {"ok": False, "error": "游戏不存在"}
+        win = getattr(self, "_window", None)
+        if not win:
+            return {"ok": False, "error": "窗口未就绪"}
+        try:
+            result = win.create_file_dialog(webview.FOLDER_DIALOG)
+            if not result:
+                result = win.create_file_dialog(
+                    file_types=("存档文件 (*.*)",))
+        except Exception as e:
+            return {"ok": False, "error": f"文件对话框失败: {e}"}
+        if not result:
+            return {"ok": False, "error": "未选择存档"}
+        return B.snapshot_import(self._db, g, result[0])
+
     # ---------- 多提供商管理 ----------
     def list_providers(self):
         return {"active": self._cfg.get("provider", {}),
@@ -2116,12 +2164,52 @@ class JsApi:
         self._db.execute("DELETE FROM chat_messages")
         return {"ok": True}
 
+    def undo_action(self, payload):
+        """撤销 AI 管家执行的写操作（update / cover 类型）。
+
+        payload 来自 agent 工具返回的 _undo 数据，前端消息上挂着【撤销】按钮。
+        不可逆操作（合并厂商/导入）不产生 undo 载荷，前端不显示按钮。
+        """
+        try:
+            p = payload or {}
+            t = p.get("type")
+            if t == "update":
+                gid = int(p["game_id"])
+                old = p.get("old") or {}
+                if not old:
+                    return {"ok": False, "error": "无可撤销字段"}
+                clean = {}
+                for k, v in old.items():
+                    if k not in self.EDITABLE:
+                        continue
+                    if isinstance(v, str):
+                        v = v.strip() or None
+                    clean[k] = v
+                if clean:
+                    sets = ", ".join(f"{k}=?" for k in clean)
+                    self._db.execute(
+                        f"UPDATE games SET {sets}, source='manual' WHERE id=?",
+                        list(clean.values()) + [gid])
+                return {"ok": True, "game_id": gid, "restored": clean}
+            if t == "cover":
+                gid = int(p["game_id"])
+                self._db.execute(
+                    "UPDATE games SET cover_path=?, cover_url=?, cover_orig_path=?,"
+                    " cover_local=?, source='manual' WHERE id=?",
+                    (p.get("old_cover_path"), p.get("old_cover_url"),
+                     p.get("old_cover_orig_path"),
+                     p.get("old_cover_local"), gid))
+                return {"ok": True, "game_id": gid}
+            return {"ok": False, "error": f"不支持的撤销类型: {t}"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ---------- 启动 / 时长 ----------
     def launch_game(self, game_id):
         g = self._db.query_one("SELECT * FROM games WHERE id=?", (int(game_id),))
         if not g:
             return {"ok": False, "error": "游戏不存在"}
-        return launcher.launch(self._db, g)
+        return launcher.launch(self._db, g, self._cfg)
 
     def stop_game(self, game_id):
         return launcher.stop(int(game_id))

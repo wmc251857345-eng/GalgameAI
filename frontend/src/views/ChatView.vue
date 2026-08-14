@@ -8,46 +8,48 @@
       </div>
     </div>
 
-    <!-- 上下文游戏选择器：选中后快速操作，不占聊天视线 -->
-    <div class="ctx-picker">
-      <template v-if="store.chat.contextGame">
-        <div class="ctx-card">
-          <img
-            v-if="store.chat.contextGame.cover_url"
-            :src="store.chat.contextGame.cover_url"
-            class="ctx-cover"
-            v-imgfb="''"
-            alt=""
-          />
-          <div v-else class="ctx-cover ctx-cover-empty">🎮</div>
-          <div class="ctx-info">
-            <div class="ctx-title">{{ store.chat.contextGame.title }}</div>
-            <div class="ctx-meta">
-              {{ store.chat.contextGame.maker || '未知厂商' }} ·
-              {{ (store.chat.contextGame.released || '').slice(0, 4) || '—' }}
-              <span class="ctx-hint-inline">说「这个游戏」就是指它</span>
+    <!-- 布局：左侧上下文面板 + 右侧聊天区 -->
+    <div class="chat-layout">
+      <aside class="chat-side">
+        <div class="chat-side-title">上下文游戏</div>
+        <template v-if="store.chat.contextGame">
+          <div class="ctx-card">
+            <img
+              v-if="store.chat.contextGame.cover_url"
+              :src="store.chat.contextGame.cover_url"
+              class="ctx-cover"
+              v-imgfb="''"
+              alt=""
+            />
+            <div v-else class="ctx-cover ctx-cover-empty">🎮</div>
+            <div class="ctx-info">
+              <div class="ctx-title">{{ store.chat.contextGame.title }}</div>
+              <div class="ctx-meta">
+                {{ store.chat.contextGame.maker || '未知厂商' }} ·
+                {{ (store.chat.contextGame.released || '').slice(0, 4) || '—' }}
+              </div>
+              <div class="ctx-hint-inline">说「这个游戏」就是指它</div>
             </div>
+            <button class="ctx-x" title="取消上下文" @click="store.setChatContext(null)">×</button>
           </div>
           <div class="ctx-quick">
             <button class="btn small" @click="qTitle">✏ 改标题</button>
             <button class="btn small" @click="qMaker">🏢 改厂商</button>
             <button class="btn small" @click="qCover">🖼 换封面</button>
             <button class="btn small" @click="qReanalyze">⟳ AI 补资料</button>
-            <button class="btn small" @click="store.openDetail(store.chat.contextGame.id)">🔍 详情</button>
+            <button class="btn small primary" @click="store.openDetail(store.chat.contextGame.id)">🔍 详情</button>
           </div>
-          <button class="ctx-x" title="取消上下文" @click="store.setChatContext(null)">×</button>
-        </div>
-      </template>
-
-      <template v-else>
-        <div class="ctx-search">
-          <span class="ctx-search-icon">🔍</span>
-          <input
-            v-model="ctxQ"
-            class="ctx-search-input"
-            placeholder="选一个游戏作为上下文（说「这个游戏」就不用找序号）…"
-            @keydown.enter.prevent="ctxFirst"
-          />
+        </template>
+        <template v-else>
+          <div class="ctx-search">
+            <span class="ctx-search-icon">🔍</span>
+            <input
+              v-model="ctxQ"
+              class="ctx-search-input"
+              placeholder="搜索游戏设为上下文…"
+              @keydown.enter.prevent="ctxFirst"
+            />
+          </div>
           <div v-if="ctxCands.length" class="ctx-drop">
             <div
               v-for="g in ctxCands"
@@ -64,9 +66,11 @@
             </div>
           </div>
           <div v-if="!ctxCands.length && ctxQ" class="ctx-drop-empty">没有匹配的游戏</div>
-        </div>
-      </template>
-    </div>
+          <p class="ctx-side-hint">选一个游戏后，可以说「这个游戏搞错了 / 推荐类似的」；或直接问管家任何问题。</p>
+        </template>
+      </aside>
+
+      <div class="chat-main">
 
     <div class="chat-box" ref="chatBox">
       <div v-if="!store.chat.messages.length" class="chat-empty">
@@ -91,7 +95,36 @@
             <div v-if="m.actions && m.actions.length" class="chat-actions">
               <span v-for="(a, j) in m.actions" :key="j" class="chat-action" :class="{ done: a.summary }">
                 {{ actionLabel(a) }}
+                <button
+                  v-if="a.undo && !a._undone"
+                  class="chat-undo"
+                  title="撤销此操作（回滚到执行前）"
+                  @click.stop="undoAct(m, a)"
+                >↩ 撤销</button>
               </span>
+              <!-- 推荐/搜索结果 → 游戏卡片 -->
+              <div v-for="(a, j) in m.actions" :key="'rec' + j" v-if="a.extra && a.extra.games" class="chat-rec">
+                <div
+                  v-for="gd in a.extra.games"
+                  :key="gd.id"
+                  class="chat-rec-card"
+                  @click="store.openDetail(gd.id)"
+                >
+                  <img v-if="gd.cover_url" :src="gd.cover_url" class="chat-rec-cover" v-imgfb="''" alt="" />
+                  <div v-else class="chat-rec-cover chat-rec-empty">🎮</div>
+                  <div class="chat-rec-info">
+                    <div class="chat-rec-title">{{ gd.title }}</div>
+                    <div class="chat-rec-meta">
+                      {{ gd.maker || '—' }} · {{ (gd.released || '').slice(0, 4) || '—' }}
+                      <template v-if="gd.rating">· {{ gd.rating }} 分</template>
+                    </div>
+                    <div class="chat-rec-tags">
+                      <span v-for="t in (gd.tags || []).slice(0, 4)" :key="t" class="chat-rec-tag">{{ t }}</span>
+                      <span v-if="gd.playtime_hours" class="chat-rec-tag">{{ gd.playtime_hours }}h</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
             <img v-if="m.image" :src="m.image" class="chat-img" alt="聊天图片" />
             <div v-if="m.role === 'assistant' && !m.error" class="chat-text md-body" v-html="md(m.content)"></div>
@@ -141,6 +174,27 @@
         {{ store.chat.sending ? '思考中…' : '➤ 发送' }}
       </button>
       <input ref="fileInput" type="file" accept="image/*" class="hidden-file" @change="onPickFile" />
+    </div>
+      </div><!-- /chat-main -->
+    </div><!-- /chat-layout -->
+
+    <!-- 快捷编辑表单（替代 prompt 弹窗） -->
+    <div v-if="editOpen" class="wd-overlay" @click.self="editOpen = false">
+      <div class="wd-panel fixer-panel" style="max-width: 460px">
+        <button class="wd-close" @click="editOpen = false">✕</button>
+        <h2 class="fixer-title">{{ editTitle }}</h2>
+        <input
+          v-model="editVal"
+          class="fixer-search chat-input"
+          :placeholder="editPlaceholder"
+          autofocus
+          @keydown.enter="editOk"
+        />
+        <div class="edit-actions">
+          <button class="btn" @click="editOpen = false">取消</button>
+          <button class="btn primary" @click="editOk">确定</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -276,6 +330,21 @@ function actionLabel(a) {
   return (a.summary ? '✓ ' : '🔧 ') + (ACTION_NAMES[a.name] || a.name)
 }
 
+// ---- 撤销 AI 操作（回滚） ----
+async function undoAct(m, a) {
+  const r = await api.undoAction(a.undo)
+  if (r && r.ok) {
+    a._undone = true
+    a.summary = '已撤销'
+    await store.load()          // 刷新库：标题/封面等立刻反映
+    if (store.chat.contextGame && r.game_id === store.chat.contextGame.id) {
+      store.openDetail(r.game_id)  // 上下文是这游戏 → 刷新详情
+    }
+  } else {
+    alert((r && r.error) || '撤销失败')
+  }
+}
+
 // ---- 时间 / 复制 ----
 function fmtTime(ts) {
   if (!ts) return ''
@@ -317,34 +386,63 @@ async function copyMsg(m) {
 function ctxGame() {
   return store.chat.contextGame
 }
+
+// 通用编辑表单（替代 prompt()：带取消/回车确认）
+const editOpen = ref(false)
+const editTitle = ref('')
+const editPlaceholder = ref('')
+const editVal = ref('')
+let editCb = null
+function openEdit(title, placeholder, initial, cb) {
+  editTitle.value = title
+  editPlaceholder.value = placeholder
+  editVal.value = initial || ''
+  editCb = cb
+  editOpen.value = true
+}
+async function editOk() {
+  const cb = editCb
+  editCb = null
+  editOpen.value = false
+  if (cb) await cb(editVal.value.trim())
+}
+
 async function qTitle() {
   const g = ctxGame()
   if (!g) return
-  const v = prompt(`《${g.title}》的新标题（或中文名）：`, g.title)
-  if (!v || !v.trim()) return
-  const r = await store.quickUpdateGame(g.id, { title: v.trim() })
-  if (r && !r.ok) alert(r.error || '修改失败')
-  else g.title = v.trim()
+  openEdit(`《${g.title}》的新标题（或中文名）`, '输入新标题', g.title, async (v) => {
+    if (!v) return
+    const r = await store.quickUpdateGame(g.id, { title: v })
+    if (r && !r.ok) alert(r.error || '修改失败')
+    else {
+      g.title = v
+      await store.load()
+    }
+  })
 }
 async function qMaker() {
   const g = ctxGame()
   if (!g) return
-  const v = prompt(`《${g.title}》的厂商：`, g.maker || '')
-  if (v === null) return
-  const r = await store.quickUpdateGame(g.id, { maker: v.trim() })
-  if (r && !r.ok) alert(r.error || '修改失败')
-  else g.maker = v.trim()
+  openEdit(`《${g.title}》的厂商`, '输入厂商名（如 Eushully）', g.maker || '', async (v) => {
+    if (!v) return
+    const r = await store.quickUpdateGame(g.id, { maker: v })
+    if (r && !r.ok) alert(r.error || '修改失败')
+    else {
+      g.maker = v
+      await store.load()
+    }
+  })
 }
 async function qCover() {
   const g = ctxGame()
   if (!g) return
-  const v = prompt(`《${g.title}》封面图片 URL：`, '')
-  if (!v || !v.trim()) return
-  const r = await api.setCoverUrl(g.id, v.trim())
+  const r = await api.chooseCover(g.id)
   if (r && !r.ok) alert(r.error || '换封面失败')
   else {
     await store.load()
-    alert('封面已更新')
+    if (store.chat.contextGame) {
+      store.chat.contextGame.cover_url = r?.cover_url || store.chat.contextGame.cover_url
+    }
   }
 }
 async function qReanalyze() {

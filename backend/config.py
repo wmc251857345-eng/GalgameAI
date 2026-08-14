@@ -24,7 +24,8 @@ DEFAULTS = {
         "enabled": True,
         "maker_buckets": {},   # 用户手动指定 厂商→桶目录名（覆盖自动学习）
     },
-    "backup": {"auto_enabled": True, "interval_days": 7, "root": "", "engine_path": "", "targets": []},
+    "backup": {"auto_enabled": True, "interval_days": 7, "root": "", "engine_path": "", "targets": [],
+               "auto_backup_on_close": True},  # 关闭游戏时自动备份存档（版本快照）
 }
 
 

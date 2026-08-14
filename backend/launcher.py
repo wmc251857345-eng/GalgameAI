@@ -25,7 +25,7 @@ def find_leproc():
     return None
 
 
-def launch(db, game):
+def launch(db, game, cfg=None):
     exe = game.get("exe_path")
     if not exe or not os.path.exists(exe):
         return {"ok": False, "error": f"exe 不存在: {exe}"}
@@ -53,7 +53,7 @@ def launch(db, game):
         (game["id"], started))
     with _lock:
         RUNNING[game["id"]] = {"proc": p, "started": started, "session_id": sid}
-    threading.Thread(target=_monitor, args=(game["id"], db, p, started, sid), daemon=True).start()
+    threading.Thread(target=_monitor, args=(game["id"], db, p, started, sid, cfg), daemon=True).start()
     return {"ok": True, "pid": p.pid}
 
 
@@ -71,13 +71,31 @@ def _finalize(db, game_id, session_id, started, ended=None, seconds=None):
                (seconds, ended, game_id))
 
 
-def _monitor(game_id, db, proc, started, session_id):
+def _auto_snapshot(db, game_id, cfg):
+    """游戏退出后自动备份存档（后台线程，失败静默——详情页有手动入口）。"""
+    try:
+        from . import backup
+        if cfg is not None and not cfg.get("backup.auto_backup_on_close", True):
+            return
+        game = db.query_one("SELECT * FROM games WHERE id=?", (game_id,))
+        if not game:
+            return
+        r = backup.snapshot_backup(db, game, kind="auto")
+        if r.get("ok"):
+            print(f"[GALA] 已自动备份《{game.get('title')}》存档 → {r.get('ts')}")
+    except Exception:
+        pass  # 自动备份失败不打扰游戏流程
+
+
+def _monitor(game_id, db, proc, started, session_id, cfg=None):
     proc.wait()
     with _lock:
         RUNNING.pop(game_id, None)
     if time.time() - time.mktime(time.strptime(started, "%Y-%m-%d %H:%M:%S")) < 10:
         return  # 误启动不计时
     _finalize(db, game_id, session_id, started)
+    # 关闭游戏 → 自动备份存档（开关在设置页：备份 → 关闭游戏时自动备份）
+    threading.Thread(target=_auto_snapshot, args=(db, game_id, cfg), daemon=True).start()
 
 
 def stop(game_id):
@@ -93,8 +111,11 @@ def stop(game_id):
 
 
 def running_ids():
+    # 只返回可 JSON 序列化的字段（game_id -> started）。
+    # 坑：之前直接 dict(RUNNING) 会把 {"proc": Popen, ...} 透传给 pywebview 桥
+    # → TypeError: Object of type Popen is not JSON serializable（日志反复刷屏）。
     with _lock:
-        return dict(RUNNING)  # game_id -> started
+        return {gid: info["started"] for gid, info in RUNNING.items()}
 
 
 # ---------- 启动补记（应用重启后） ----------

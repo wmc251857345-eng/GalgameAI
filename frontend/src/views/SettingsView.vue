@@ -251,6 +251,10 @@
         <div v-if="bkStatus" class="bk-status" :class="bkStatus.ok ? 'ok' : 'fail'">
           {{ bkStatus.ok ? `✓ 引擎就绪：${bkStatus.engine_path}` : `✗ ${bkStatus.error}` }}
         </div>
+        <div v-if="bkNeverBackedUp" class="bk-status fail" style="margin-top: 8px">
+          ⚠️ 存档备份从未执行过：请先在「某款游戏详情页 → 备份」为该游戏配置存档路径，
+          再点下方「☁ 立即备份全部存档」才会真正备份存档（"备份数据库"只备份资料库，不包含存档）。
+        </div>
 
         <h3 class="card-sub" style="margin-top: 14px">备份目标（可多选 = 双线/多线备份）</h3>
         <div v-for="t in bkTargets" :key="t.path" class="bk-target-row">
@@ -275,8 +279,18 @@
           <input v-model="cfg.backup.auto_enabled" type="checkbox" />
         </div>
         <div class="row">
+          <label>关闭游戏时自动备份存档</label>
+          <input v-model="cfg.backup.auto_backup_on_close" type="checkbox" />
+          <span class="dim" style="font-size: 12px">从 GALA 启动的游戏退出后，存档自动保存为版本快照（可随时回滚）</span>
+        </div>
+        <div class="row">
           <label>备份间隔（天）</label>
           <input v-model.number="cfg.backup.interval_days" type="number" min="1" max="90" style="flex: 0 0 80px" />
+        </div>
+        <div v-if="snapRoot" class="row">
+          <label>快照目录</label>
+          <span class="bk-target-path" style="font-size: 12px" :title="snapRoot">{{ snapRoot }}</span>
+          <span class="dim" style="font-size: 12px">（按游戏名分类，每游戏保留 {{ snapKeep }} 份）</span>
         </div>
         <div class="row" style="margin-top: 10px">
           <button class="btn primary" :disabled="bkBusy" @click="backupAllNow">
@@ -517,6 +531,9 @@ const bkBusy = ref(false)
 const bkResult = ref(null)
 const newTargetPath = ref('')
 const bkEnginePath = ref('')
+const bkNeverBackedUp = ref(false)
+const snapRoot = ref('')
+const snapKeep = ref(20)
 
 const kindLabel = (k) => ({ default: '本地', usb: 'U盘', onedrive: 'OneDrive', custom: '自定义' }[k] || k)
 
@@ -526,6 +543,18 @@ async function bkRefresh() {
   bkStatus.value = r
   bkTargets.value = r.targets || []
   bkEnginePath.value = r.engine_path || bkEnginePath.value
+  // 从未备份过 → 顶部提示首配引导（备份成功过就不再提示）
+  try {
+    const hist = await api.backupList()
+    bkNeverBackedUp.value = !(hist?.items || []).length
+  } catch {
+    bkNeverBackedUp.value = false
+  }
+  // 快照根目录 + 保留份数
+  try {
+    const sr = await api.backupSnapshotRoot()
+    if (sr?.ok) { snapRoot.value = sr.root; snapKeep.value = sr.keep || 20 }
+  } catch { /* 忽略 */ }
 }
 
 async function probeEngine() {

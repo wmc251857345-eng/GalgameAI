@@ -642,4 +642,40 @@ export const api = {
     await delay()
     return { ok: true, items: [] }
   },
+
+  // AI 管家操作撤销（回滚 update/cover）
+  async undoAction(payload) {
+    if (hasBridge()) return window.pywebview.api.undo_action(payload)
+    return { ok: false, error: '(mock) 无可撤销操作' }
+  },
+
+  // ---------- GALA 版本快照（关游戏自动备份 / 详情页时间线） ----------
+  async backupSnapshotRoot() {
+    if (hasBridge()) return window.pywebview.api.backup_snapshot_root()
+    return { ok: true, root: '', keep: 20 }
+  },
+
+  async backupSnapshotGame(gameId) {
+    if (hasBridge()) return window.pywebview.api.backup_snapshot_game(gameId)
+    await delay(500)
+    return { ok: true, ts: '', bytes: 0 }
+  },
+
+  async backupSnapshotVersions(gameId) {
+    if (hasBridge()) return window.pywebview.api.backup_snapshot_versions(gameId)
+    await delay()
+    return { ok: true, items: [] }
+  },
+
+  async backupSnapshotRestore(gameId, ts) {
+    if (hasBridge()) return window.pywebview.api.backup_snapshot_restore(gameId, ts)
+    await delay(500)
+    return { ok: true, restored: [] }
+  },
+
+  async backupSnapshotImport(gameId) {
+    if (hasBridge()) return window.pywebview.api.backup_snapshot_import(gameId)
+    await delay(500)
+    return { ok: false, error: '(mock) 无文件对话框' }
+  },
 }

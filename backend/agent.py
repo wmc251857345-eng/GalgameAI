@@ -169,6 +169,7 @@ class AgentService:
         tag_map = self._tag_map()
         out = []
         for g in rows:
+            from .api import _cover_url
             out.append({
                 "id": g["id"], "title": g["title"], "title_jp": g["title_jp"],
                 "maker": g["maker"], "released": g["released"],
@@ -176,6 +177,7 @@ class AgentService:
                 "length_minutes": g["length_minutes"], "status": g["status"],
                 "favorite": g["favorite"], "hanhua": g["hanhua"],
                 "playtime_hours": round((g["playtime_seconds"] or 0) / 3600, 1),
+                "cover_url": _cover_url(g.get("cover_path")),
                 "tags": tag_map.get(g["id"], []),
             })
         # 按标签过滤（内存过滤，因为标签在关联表）
@@ -293,24 +295,44 @@ class AgentService:
         fields = {k: v for k, v in args.items() if k != "id" and v is not None}
         if not fields:
             return {"error": "没有可更新的字段"}
+        old = self._db.query_one("SELECT * FROM games WHERE id=?", (gid,))
         r = self._api.update_game(gid, fields)
         if not r.get("ok"):
             return {"error": r.get("error", "更新失败")}
         g = r["game"]
-        return {"ok": True,
+        # 撤销载荷：记录被改字段的旧值（chat() 会把 _undo 放进 actions，前端可一键回滚）
+        undo_fields = {}
+        for k in fields:
+            if old is not None and old.get(k) != g.get(k):
+                undo_fields[k] = old.get(k)
+        out = {"ok": True,
                 "_summary": f"已修正《{g.get('title')}》",
                 "updated": {k: v for k, v in fields.items()},
                 "title": g.get("title"), "maker": g.get("maker"),
                 "released": g.get("released")}
+        if undo_fields:
+            out["_undo"] = {"type": "update", "game_id": gid, "old": undo_fields}
+        return out
 
     def _tool_set_cover(self, args):
         url = (args.get("url") or "").strip()
         if not url.startswith("http"):
             return {"error": "URL 无效"}
-        r = self._api.set_cover_url(int(args.get("id")), url)
+        gid = int(args.get("id"))
+        old = self._db.query_one(
+            "SELECT cover_path, cover_url, cover_orig_path, cover_local FROM games WHERE id=?",
+            (gid,))
+        r = self._api.set_cover_url(gid, url)
         if not r.get("ok"):
             return {"error": r.get("error", "换封面失败")}
-        return {"ok": True, "_summary": "封面已更新"}
+        out = {"ok": True, "_summary": "封面已更新"}
+        if old:
+            out["_undo"] = {"type": "cover", "game_id": gid,
+                            "old_cover_path": old.get("cover_path"),
+                            "old_cover_url": old.get("cover_url"),
+                            "old_cover_orig_path": old.get("cover_orig_path"),
+                            "old_cover_local": old.get("cover_local")}
+        return out
 
     def _tool_reanalyze(self, args):
         r = self._api.reanalyze_game(int(args.get("id")))
@@ -496,7 +518,15 @@ class AgentService:
                 if not isinstance(result, dict):
                     result = {"result": result} if result is not None else {"error": "工具无返回"}
                 summary = result.pop("_summary", None)
-                actions.append({"name": name, "args": args, "summary": summary})
+                undo = result.pop("_undo", None)
+                # 推荐/搜索动作附带结构化结果 → 前端渲染成游戏卡片（而非纯文字）
+                extra = None
+                if name == "search_games" and isinstance(result, dict):
+                    games = result.get("games")
+                    if isinstance(games, list):
+                        extra = {"games": games[:8]}
+                actions.append({"name": name, "args": args, "summary": summary,
+                                "undo": undo, "extra": extra})
                 content = json.dumps(result, ensure_ascii=False, default=str)[:2500]
                 msgs.append({"role": "tool", "tool_call_id": tc.get("id"), "content": content})
                 _t.sleep(0.8)  # 节流，避免撞中转限速

@@ -173,12 +173,10 @@
             <button class="btn small" :disabled="bkBusy" @click="detectSaves">
               🔍 自动探测存档位置
             </button>
-            <button class="btn small primary" :disabled="bkBusy || !savePaths.length" @click="doBackup">
-              {{ bkBusy ? '备份中…' : '☁ 立即备份' }}
+            <button class="btn small primary" :disabled="bkBusy || !savePaths.length" @click="doSnapshot">
+              {{ bkBusy ? '备份中…' : '📸 立即备份快照' }}
             </button>
-            <button class="btn small danger-soft" :disabled="bkBusy || !bkMeta?.backup_count" @click="doRestore">
-              恢复存档
-            </button>
+            <button class="btn small" :disabled="bkBusy" @click="doImport">📥 导入存档</button>
           </div>
           <div v-if="savePaths.length" class="bk-paths">
             <div v-for="p in savePaths" :key="p" class="bk-path">
@@ -203,18 +201,27 @@
             </button>
           </div>
           <div v-if="bkMeta" class="bk-meta">
-            <span v-if="bkMeta.last_backup_at">上次备份：{{ bkMeta.last_backup_at }}</span>
-            <span v-if="bkMeta.backup_count">已备份 {{ bkMeta.backup_count }} 次</span>
-            <span v-if="bkMeta.total_bytes">约 {{ (bkMeta.total_bytes / 1024).toFixed(0) }} KB</span>
+            <span v-if="bkMeta.last_backup_at">上次引擎备份：{{ bkMeta.last_backup_at }}</span>
+            <span v-if="bkMeta.backup_count">共 {{ bkMeta.backup_count }} 次</span>
           </div>
-          <div v-if="bkVersions.length" class="bk-versions">
-            <h3>备份历史</h3>
-            <div v-for="v in bkVersions" :key="v.id" class="bk-version">
-              <span>{{ v.backed_at }}</span>
-              <span v-if="v.bytes">· {{ (v.bytes / 1024).toFixed(0) }} KB</span>
-              <span class="bk-ver-status" :class="v.status">{{ v.status === 'ok' ? '✓' : '✗' }}</span>
+          <h3 style="margin-top: 12px">版本时间线（{{ snapVersions.length }}）</h3>
+          <div v-if="snapVersions.length" class="bk-versions">
+            <div v-for="v in snapVersions" :key="v.ts" class="bk-version snap-ver">
+              <span class="bk-ver-time">{{ fmtSnapTime(v.backed_at) }}</span>
+              <span class="bk-ver-kind" :class="v.kind">{{ v.kind === 'auto' ? '自动' : '手动' }}</span>
+              <span v-if="v.bytes" class="bk-ver-size">· {{ fmtSize(v.bytes) }}</span>
+              <span v-if="!v.exists" class="bk-ver-missing">（目录已清理）</span>
+              <button v-if="v.exists" class="btn small bk-ver-restore" :disabled="bkBusy" @click="doRestoreSnap(v.ts)">
+                恢复此版本
+              </button>
             </div>
           </div>
+          <div v-else class="bk-hint">
+            暂无版本快照：从 GALA 启动游戏并关闭后会自动备份（可随时回滚）；也可点「📸 立即备份快照」手动保存一份。
+          </div>
+          <p class="hint" style="margin-top: 6px">
+            快照保存在 GALA 数据目录 database/backups/&lt;游戏名&gt;/，每游戏保留 20 份，恢复前会自动保存当前状态。
+          </p>
         </template>
         <div v-else class="bk-hint">
           {{ bkEngine ? bkEngine.error : '引擎检测中…' }}
@@ -456,12 +463,14 @@ const savePaths = ref([])
 const candidates = ref([])
 const bkMeta = ref(null)
 const bkVersions = ref([])
+const snapVersions = ref([])
 
 // 切换游戏时加载备份状态
 watch(() => store.selectedGameId, async () => {
   bkEngine.value = null
   candidates.value = []
   bkVersions.value = []
+  snapVersions.value = []
   if (!g.value?.id) return
   try {
     bkEngine.value = await api.backupEngineStatus()
@@ -472,14 +481,16 @@ watch(() => store.selectedGameId, async () => {
 async function loadBackupState() {
   if (!g.value?.id) return
   try {
-    const [pathsR, listR, verR] = await Promise.all([
+    const [pathsR, listR, verR, snapR] = await Promise.all([
       api.backupGetSavePaths(g.value.id),
       api.backupList(g.value.id),
       api.backupVersions(g.value.id).catch(() => ({ ok: true, items: [] })),
+      api.backupSnapshotVersions(g.value.id).catch(() => ({ ok: true, items: [] })),
     ])
     savePaths.value = pathsR.paths || []
     bkMeta.value = (listR.items || [])[0] || null
     bkVersions.value = verR.items || []
+    snapVersions.value = snapR.items || []
   } catch (e) {
     /* 静默 */
   }
@@ -508,19 +519,12 @@ async function removeSavePath(p) {
   await api.backupSavePaths(g.value.id, savePaths.value)
 }
 
-async function doBackup() {
+async function doSnapshot() {
   bkBusy.value = true
   try {
-    const r = await api.backupGame([g.value.id])
+    const r = await api.backupSnapshotGame(g.value.id)
     if (!r.ok) { alert(r.error || '备份失败'); return }
-    const ov = r.overall || {}
-    const cg = ov.changedGames || {}
-    const parts = []
-    if (cg.new) parts.push(`新增 ${cg.new}`)
-    if (cg.different) parts.push(`更新 ${cg.different}`)
-    if (cg.same) parts.push(`未变化 ${cg.same}`)
-    const tgt = (r.targets || []).filter((t) => t.ok).length
-    alert(`备份完成：${parts.join('，') || '无变化'}，写入 ${tgt} 个目标`)
+    alert(`✓ 快照已保存（${fmtSize(r.bytes || 0)}）`)
     await loadBackupState()
     store.load()
   } finally {
@@ -528,16 +532,38 @@ async function doBackup() {
   }
 }
 
-async function doRestore() {
-  if (!confirm('确定从备份恢复存档？会覆盖当前存档文件。')) return
+async function doImport() {
+  const r = await api.backupSnapshotImport(g.value.id)
+  if (!r.ok) { alert(r.error || '导入失败'); return }
+  alert(`✓ 存档已导入 → ${r.target}`)
+  await loadBackupState()
+}
+
+async function doRestoreSnap(ts) {
+  if (!confirm(`确定恢复 ${ts} 版本？\n当前存档会先自动保存为新版本（可反悔）。`)) return
   bkBusy.value = true
   try {
-    const r = await api.backupRestoreGame(g.value.id)
+    const r = await api.backupSnapshotRestore(g.value.id, ts)
     if (!r.ok) { alert(r.error || '恢复失败'); return }
-    alert('恢复完成')
+    alert(`✓ 已恢复 ${r.ts} 版本（${r.restored.length} 个存档目录）`)
     await loadBackupState()
   } finally {
     bkBusy.value = false
   }
+}
+
+function fmtSize(b) {
+  if (!b) return '0 B'
+  if (b > 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB'
+  if (b > 1024) return (b / 1024).toFixed(0) + ' KB'
+  return b + ' B'
+}
+
+function fmtSnapTime(ts) {
+  if (!ts) return ''
+  const d = new Date(String(ts).replace(' ', 'T'))
+  if (isNaN(d.getTime())) return ts || ''
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 </script>

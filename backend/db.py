@@ -167,6 +167,26 @@ class Database:
             conn = self.connect()
             v = conn.execute("PRAGMA user_version").fetchone()[0]
             if v != SCHEMA_VERSION:
+                # 防数据毁灭（历史教训）：DROP 重建前必须先把旧库完整备份。
+                # 备份用 sqlite3 在线备份 API（一致快照，无需关闭连接）；
+                # 备份失败则中止重建 —— 宁可带着旧 schema 启动，也不冒险丢唯一副本。
+                import time as _t
+                bak_dir = os.path.join(os.path.dirname(self.path), "backup")
+                try:
+                    os.makedirs(bak_dir, exist_ok=True)
+                    bak = os.path.join(
+                        bak_dir,
+                        f"pre_upgrade_v{v}_{_t.strftime('%Y%m%d_%H%M%S')}.db")
+                    dest = sqlite3.connect(bak)
+                    try:
+                        with dest:
+                            conn.backup(dest)
+                    finally:
+                        dest.close()
+                    print(f"[GALA] 旧库已备份: {bak}")
+                except Exception as e:
+                    print(f"[GALA] 旧库备份失败({e})，取消重建，保留现有数据")
+                    return
                 tables = [r["name"] for r in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
                 for t in tables:
@@ -194,6 +214,10 @@ class Database:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(chat_messages)")}
         if "image" not in cols:
             conn.execute("ALTER TABLE chat_messages ADD COLUMN image TEXT")
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(backup_versions)")}
+        if "kind" not in cols:
+            # 快照类型：manual（手动/引擎备份）| auto（关游戏自动备份）
+            conn.execute("ALTER TABLE backup_versions ADD COLUMN kind TEXT DEFAULT 'manual'")
 
     def query(self, sql, params=()):
         with self._lock:

@@ -69,8 +69,24 @@ def main():
     exe_cfg = os.path.join(OUT, "config", "config.json")
     if not os.path.exists(exe_cfg) and os.path.exists(dev_cfg):
         os.makedirs(os.path.join(OUT, "config"), exist_ok=True)
-        shutil.copy(dev_cfg, exe_cfg)
-        print(f"  config/config.json ← 开发配置")
+        # 路径重写：开发配置里指向【开发根】的绝对路径（backup 目标等）在部署版会失效，
+        # 一并改写为 exe 旁目录，避免部署版备份写到源码目录（历史踩坑）。
+        import json as _json
+        try:
+            with open(dev_cfg, "r", encoding="utf-8") as f:
+                _cfg = _json.load(f)
+            _local_bak = os.path.join(OUT, "database", "ludusavi_backups").replace("\\", "\\\\")
+            for t in (_cfg.get("backup", {}).get("targets") or []):
+                if isinstance(t, dict) and str(t.get("path", "")).startswith(BASE):
+                    t["path"] = _local_bak
+            if str(_cfg.get("backup", {}).get("root") or "").startswith(BASE):
+                _cfg["backup"]["root"] = _local_bak
+            with open(exe_cfg, "w", encoding="utf-8") as f:
+                _json.dump(_cfg, f, ensure_ascii=False, indent=2)
+            print("  config/config.json ← 开发配置（backup 目标已重写到 exe 旁）")
+        except Exception as e:
+            shutil.copy(dev_cfg, exe_cfg)
+            print(f"  config/config.json ← 开发配置（路径重写失败，原样复制: {e}）")
 
     print(f"== 完成: {OUT} ==")
     exe = os.path.join(OUT, "GalgameAI.exe")

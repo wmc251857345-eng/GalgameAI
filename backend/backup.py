@@ -21,6 +21,7 @@ import time
 from typing import Any, Optional
 
 from . import paths
+from .utils import now_iso
 
 # 引擎配置目录（GALA 专属，与手动使用的 %APPDATA%/ludusavi 隔离）
 ENGINE_CONFIG_DIR = os.path.join(paths.CONFIG_DIR, "ludusavi")
@@ -572,3 +573,187 @@ def get_backup_meta(db) -> list[dict]:
         """SELECT game_title, engine_name, last_backup_at, total_bytes, backup_count
            FROM backup_history ORDER BY last_backup_at DESC""")
     return rows
+
+
+# ========== GALA 版本快照（关游戏自动备份 / 详情页时间线） ==========
+# 与 ludusavi 引擎备份独立：直接把存档文件复制为带时间戳的版本目录，
+# 不依赖 ludusavi.exe，版本管理完全自控（保留 SNAPSHOT_KEEP 份/游戏）。
+# 目录结构：database/backups/<游戏中文名>/<YYYYmmdd_HHMMSS>/
+SNAPSHOT_ROOT = os.path.join(paths.BASE, "database", "backups")
+SNAPSHOT_KEEP = 20
+# 复制存档时忽略的垃圾/临时内容
+_SNAP_IGNORE = ("desktop.ini", "Thumbs.db", "*.tmp", "*.log", "$RECYCLE.BIN", "System Volume Information")
+
+
+def _safe_name(name: str) -> str:
+    for ch in '\\/:*?"<>|':
+        name = name.replace(ch, "_")
+    name = name.strip().strip(".")
+    return name or "未命名"
+
+
+def snapshot_dir(db, game) -> str:
+    """版本快照根：database/backups/<游戏中文名>/（同名游戏共享目录，时间戳区分）。"""
+    name = (game.get("title_zh") or "").strip() or (game.get("title") or "").strip() or f"游戏{game['id']}"
+    d = os.path.join(SNAPSHOT_ROOT, _safe_name(name))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _game_save_dirs(db, game) -> list[str]:
+    """自动备份用的存档源目录（去重、只保留存在项）：
+    优先用户手动配置过的 backup_history.save_paths，再补 detect_save_paths 探测命中。"""
+    dirs, seen = [], set()
+    meta = db.query_one("SELECT save_paths FROM backup_history WHERE game_id=?", (game["id"],))
+    if meta and meta.get("save_paths"):
+        try:
+            for p in json.loads(meta["save_paths"] or "[]"):
+                if p and os.path.isdir(p) and p.lower() not in seen:
+                    seen.add(p.lower())
+                    dirs.append(p)
+        except (ValueError, TypeError):
+            pass
+    for c in detect_save_paths(game):
+        p = c.get("path")
+        if p and c.get("exists") and os.path.isdir(p) and p.lower() not in seen:
+            seen.add(p.lower())
+            dirs.append(p)
+    return dirs
+
+
+def snapshot_backup(db, game, kind: str = "manual") -> dict:
+    """把游戏当前存档复制为版本快照 database/backups/<游戏名>/<ts>/。
+
+    kind: manual（手动点击/恢复前保险）| auto（关游戏自动备份）。
+    写 backup_versions + 每游戏保留 SNAPSHOT_KEEP 份（超量删最旧）。
+    """
+    srcs = _game_save_dirs(db, game)
+    if not srcs:
+        return {"ok": False,
+                "error": "未找到该游戏的存档目录（可在详情页手动配置存档路径后再备份）"}
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    # 同一秒重复备份 → 加序号（游戏秒退重开场景）
+    dest = os.path.join(snapshot_dir(db, game), ts)
+    i = 1
+    while os.path.exists(dest):
+        dest = os.path.join(snapshot_dir(db, game), f"{ts}_{i}")
+        i += 1
+    ts = os.path.basename(dest)
+    total = 0
+    copied_dirs = []
+    try:
+        for s in srcs:
+            name = _safe_name(os.path.basename(s.rstrip("\\/")) or "save")
+            d = os.path.join(dest, name)
+            k = 1
+            while os.path.exists(d):
+                d = os.path.join(dest, f"{name}_{k}")
+                k += 1
+            shutil.copytree(s, d, ignore=shutil.ignore_patterns(*_SNAP_IGNORE))
+            copied_dirs.append(d)
+            for root, _dirs, files in os.walk(d):
+                total += sum(os.path.getsize(os.path.join(root, f)) for f in files)
+    except Exception as e:
+        return {"ok": False, "error": f"备份失败: {e}"}
+    try:
+        with open(os.path.join(dest, "_meta.json"), "w", encoding="utf-8") as f:
+            json.dump({"game_id": game["id"], "title": game.get("title"), "created": ts,
+                       "sources": srcs, "bytes": total, "kind": kind}, f,
+                      ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+    db.execute(
+        "INSERT INTO backup_versions (game_id, backed_at, engine_when, bytes, status, kind)"
+        " VALUES (?,?,?,?,?,?)",
+        (game["id"], now_iso(), ts, total, "ok", kind))
+    _snapshot_prune(db, game)
+    return {"ok": True, "ts": ts, "bytes": total, "dirs": len(copied_dirs), "dest": dest}
+
+
+def _snapshot_prune(db, game):
+    """每游戏最多保留 SNAPSHOT_KEEP 份（时间戳排序删最旧，同步清 backup_versions）。"""
+    base = snapshot_dir(db, game)
+    try:
+        vers = sorted(d for d in os.listdir(base)
+                      if os.path.isdir(os.path.join(base, d)))
+    except OSError:
+        return
+    for old in vers[:-SNAPSHOT_KEEP]:
+        shutil.rmtree(os.path.join(base, old), ignore_errors=True)
+        db.execute("DELETE FROM backup_versions WHERE game_id=? AND engine_when=?",
+                   (game["id"], old))
+
+
+def snapshot_versions(db, game_id: int) -> list[dict]:
+    """版本时间线（新→旧）。kind/backed_at/bytes/目录是否仍在。"""
+    game = db.query_one("SELECT * FROM games WHERE id=?", (game_id,))
+    out = []
+    if not game:
+        return out
+    base = snapshot_dir(db, game)
+    for r in db.query(
+            "SELECT * FROM backup_versions WHERE game_id=? ORDER BY backed_at DESC",
+            (game_id,)):
+        ts = r.get("engine_when") or ""
+        p = os.path.join(base, ts) if ts else ""
+        out.append({
+            "ts": ts, "backed_at": r["backed_at"], "bytes": r["bytes"] or 0,
+            "kind": r.get("kind") or "manual", "status": r["status"],
+            "exists": bool(ts) and os.path.isdir(p),
+        })
+    return out
+
+
+def snapshot_restore(db, game, ts: str) -> dict:
+    """恢复指定版本：先把当前存档自动存为新版本（保险，可反悔），
+    再把该版本内容复制回存档源目录。"""
+    src = os.path.join(snapshot_dir(db, game), ts)
+    if not os.path.isdir(src):
+        return {"ok": False, "error": f"版本不存在: {ts}"}
+    srcs = _game_save_dirs(db, game)
+    if not srcs:
+        return {"ok": False, "error": "该游戏没有可恢复的存档目标路径"}
+    # 保险：当前状态先存为新版本
+    try:
+        snapshot_backup(db, game, kind="manual")
+    except Exception:
+        pass
+    restored = []
+    for s in srcs:
+        name = _safe_name(os.path.basename(s.rstrip("\\/")) or "save")
+        cand = os.path.join(src, name)
+        if not os.path.isdir(cand):
+            continue
+        shutil.rmtree(s, ignore_errors=True)  # 快照已留底，直接覆盖
+        shutil.copytree(cand, s)
+        restored.append(s)
+    if not restored:
+        return {"ok": False,
+                "error": f"该版本快照中没有与存档目录匹配的内容（{src}）"}
+    return {"ok": True, "restored": restored, "ts": ts}
+
+
+def snapshot_import(db, game, src_path: str) -> dict:
+    """导入存档：把用户提供的文件/目录复制到游戏存档目录（先自动存当前状态保险）。"""
+    if not src_path or not os.path.exists(src_path):
+        return {"ok": False, "error": "选择的存档不存在"}
+    srcs = _game_save_dirs(db, game)
+    if not srcs:
+        return {"ok": False, "error": "该游戏没有可导入的存档目标路径（先配置存档路径）"}
+    try:
+        snapshot_backup(db, game, kind="manual")
+    except Exception:
+        pass
+    target = srcs[0]  # 最可信的存档目录
+    if os.path.isdir(src_path):
+        # 目录：整个复制（若目录名与目标相同则复制内容，否则复制为子目录）
+        if os.path.basename(src_path.rstrip("\\/")).lower() == os.path.basename(target).lower():
+            shutil.rmtree(target, ignore_errors=True)
+            shutil.copytree(src_path, target)
+        else:
+            sub = os.path.join(target, os.path.basename(src_path.rstrip("\\/")))
+            shutil.copytree(src_path, sub)
+    else:
+        os.makedirs(target, exist_ok=True)
+        shutil.copy2(src_path, os.path.join(target, os.path.basename(src_path)))
+    return {"ok": True, "target": target, "src": src_path}

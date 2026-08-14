@@ -258,6 +258,14 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .bk-version { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--text); padding: 3px 0; border-bottom: 1px dashed var(--border); }
 .bk-ver-status.ok { color: #2ecc40; }
 .bk-ver-status.failed { color: #e74c3c; }
+.bk-ver-kind {
+  font-size: 10.5px; padding: 0 6px; border-radius: 8px; line-height: 16px;
+}
+.bk-ver-kind.auto { background: rgba(102, 192, 244, 0.14); color: var(--accent); }
+.bk-ver-kind.manual { background: rgba(164, 208, 7, 0.13); color: var(--green); }
+.bk-ver-missing { color: var(--text-dim); font-size: 11.5px; }
+.bk-ver-restore { margin-left: auto; padding: 1px 10px; font-size: 11.5px; }
+.snap-ver { flex-wrap: wrap; row-gap: 2px; }
 
 /* 设置页：备份目标 */
 .bk-status { font-size: 12.5px; margin: 6px 0; line-height: 1.7; }
@@ -866,6 +874,16 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 
 /* 输入框可选中文本 */
 input, textarea { user-select: text; }
+/* 内容文本放开选中复制：全局 user-select:none 只防控件误选，不能锁用户内容（聊天/简介/路径等） */
+.chat-text, .chat-time, .chat-err, .chat-meta,
+.md-body, pre, code,
+.detail-desc, .desc, .summary, .stats-note, .hint,
+.ctx-title, .ctx-meta, .bk-target-path, .log-view,
+.fixer-title, .work-summary, .maker-desc,
+.aliases, .empty p, .chat-empty-sub, .chat-cap li {
+  user-select: text;
+  -webkit-user-select: text;
+}
 
 /* 交互元素统一平滑过渡 */
 .btn, .nav-item, .tab, .chip, .tf-chip, .fixer-item,
@@ -913,6 +931,34 @@ input, textarea { user-select: text; }
 
 /* ---------- 聊天页：上下文选择器 ---------- */
 .ctx-picker { margin-bottom: 12px; }
+/* 聊天页左右布局：左侧上下文面板 + 右侧聊天区 */
+.chat-layout { display: flex; gap: 14px; flex: 1; min-height: 0; }
+.chat-side {
+  flex: 0 0 260px; display: flex; flex-direction: column; gap: 10px;
+  background: var(--bg-deep); border: 1px solid var(--border);
+  border-radius: 12px; padding: 12px; overflow-y: auto; max-height: 100%;
+}
+.chat-side-title { font-size: 12px; color: var(--text-dim); letter-spacing: 1px; }
+.ctx-side-hint { font-size: 11.5px; color: var(--text-dim); line-height: 1.7; margin-top: 8px; }
+.chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* 推荐/搜索结果卡片 */
+.chat-rec { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.chat-rec-card {
+  display: flex; gap: 8px; align-items: center; padding: 6px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  cursor: pointer; transition: border-color .15s, background .15s;
+}
+.chat-rec-card:hover { border-color: var(--accent); background: rgba(102, 192, 244, 0.06); }
+.chat-rec-cover { width: 46px; height: 62px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+.chat-rec-empty { display: flex; align-items: center; justify-content: center; font-size: 20px; background: var(--bg-deep); }
+.chat-rec-info { min-width: 0; }
+.chat-rec-title { font-size: 12.5px; color: var(--text-bright); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-rec-meta { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.chat-rec-tags { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+.chat-rec-tag { font-size: 10px; padding: 0 5px; border-radius: 7px; background: rgba(102, 192, 244, 0.12); color: var(--accent); }
+/* 快捷编辑表单 */
+.edit-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.edit-actions .btn { border-radius: 8px; padding: 7px 18px; }
 .ctx-card {
   display: flex; align-items: center; gap: 12px;
   background: linear-gradient(90deg, rgba(102, 192, 244, 0.12), rgba(102, 192, 244, 0.03));
@@ -1134,6 +1180,12 @@ input, textarea { user-select: text; }
 .chat-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .chat-action { font-size: 11px; padding: 2px 10px; border-radius: 10px; background: var(--bg-deep); color: var(--text-dim); border: 1px solid var(--border); }
 .chat-action.done { background: rgba(164,208,7,.12); color: var(--green); border-color: rgba(164,208,7,.35); }
+.chat-undo {
+  margin-left: 6px; padding: 0 6px; font-size: 11px; line-height: 16px;
+  border: 1px solid rgba(102, 192, 244, 0.35); border-radius: 8px;
+  background: transparent; color: var(--accent); cursor: pointer;
+}
+.chat-undo:hover { background: rgba(102, 192, 244, 0.18); }
 
 .chat-bubble.typing { display: flex; align-items: center; gap: 8px; color: var(--text-dim); }
 .typing-dots { display: inline-flex; gap: 3px; }
