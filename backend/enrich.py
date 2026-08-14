@@ -510,6 +510,12 @@ def _auto_analyze_new(cfg, db, paths):
                  + (f" ({r.get('matched')} {r.get('score')})" if r.get("matched") else ""))
         except Exception as e:
             _log(f"[{i}/{len(games)}] {g['title']} 失败: {e}")
+            # 分析失败也进待确认页（status=1）：用户可见、可手动确认/重新分析。
+            # 历史坑：失败时 status 停在 0 → 列表默认看不到 → 用户以为“扫描扫不出新游戏”，只能手动添加。
+            try:
+                db.execute("UPDATE games SET status=1 WHERE id=?", (g["id"],))
+            except Exception:
+                pass
         time.sleep(0.3)
 
 
@@ -531,6 +537,12 @@ def analyze_all(cfg, db):
                      + (f" ({r.get('matched')} {r.get('score')})" if r.get("matched") else ""))
             except Exception as e:
                 _log(f"[{i}/{len(games)}] {g['title']} 失败: {e}")
+                # 分析失败也进待确认页（status=1）：用户可见、可手动确认/重新分析。
+                # 历史坑：失败时 status 停在 0 → 列表看不到 → 用户以为“扫描扫不出新游戏”。
+                try:
+                    db.execute("UPDATE games SET status=1 WHERE id=?", (g["id"],))
+                except Exception:
+                    pass
             time.sleep(0.3)
     except Exception as e:
         _set(error=str(e))

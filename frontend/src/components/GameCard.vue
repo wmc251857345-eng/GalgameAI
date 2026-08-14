@@ -18,6 +18,7 @@
         <button class="ch-play" @click.stop="$emit('launch')">{{ game.running ? '运行中…' : '启动' }}</button>
       </div>
       <div v-if="game.playtime_hours > 0" class="cover-time">{{ game.playtime_hours }}h</div>
+      <div v-if="game.status === 0" class="cover-pending cover-analyze">待分析</div>
       <div v-if="game.status === 1" class="cover-pending">待确认</div>
       <div v-if="game.status === 3" class="cover-pending cover-skip">已跳过</div>
       <BackupBadge v-if="game.backup_meta" :meta="game.backup_meta" />

@@ -110,6 +110,7 @@
         <div class="list-cell list-score">{{ g.score != null ? '★ ' + g.score : '—' }}</div>
         <div class="list-cell list-time">{{ g.playtime_hours }}h</div>
         <div class="list-badges">
+          <span v-if="g.status === 0" class="status-badge analyze">⚙ 待分析</span>
           <span v-if="g.status === 2" class="status-badge ok">✓ 已入库</span>
           <span v-else-if="g.status === 1" class="status-badge warn">待确认</span>
           <span v-else-if="g.status === 3" class="status-badge skip">已跳过</span>
