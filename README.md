@@ -1,84 +1,118 @@
-# GALA — Galgame AI Library Agent
+# 🎮 GALA — Galgame AI Library Agent
 
-本地 Galgame 智能管理器：Steam 风格界面，扫描本地游戏 → 匹配 VNDB/Bangumi → AI 生成中文简介 → 标签 / 时长 / 一键启动（含 Locale Emulator）。
+> 你的 Galgame 本地库智能管家：**自动整理 → AI 写简介 → 一键启动 → 关游戏自动备份存档**。
+> Steam 风格的深色界面，专为本地收藏党设计，一切数据都在你自己电脑上。
 
-## 核心功能
+![GALA 主界面 - 游戏库](docs/screenshots/app.png)
 
-| 模块 | 说明 |
-|---|---|
-| 🖥 游戏库 | 网格/列表双视图、标签/厂商/年份筛选、收藏、随机、搜索（FTS5）、状态 Tab |
-| 🤖 AI 管家 | 工具调用式对话：搜索/推荐/**口述修正**（correct_game）/换封面/重分析，合规强制防撒谎，历史落库 |
-| 🔁 多 AI 轮询 | 提供商池（catiecli / ggchan / 任意 OpenAI 兼容），失败/限速自动切换 + 45s 冷却，设置页可视化管理 |
-| 🏭 厂商/系列追踪 | VNDB producer 档案 + 全部作品（已拥有标记）、系列/前作全家桶（relations 家族关系） |
-| 🎮 启动 | exe 启发式识别、Locale Emulator、游玩时长统计（进程监控 + 重启补记）、托盘 |
-| 🛡 稳定 | 后台任务断点续跑、异步 AI（不阻塞 UI）、文件日志 `logs/app.log`、自动备份、一键自检 `scripts/verify.py` |
+---
 
-## 架构
+## 它解决什么问题？
 
-```
-Vue3 前端 (Steam 风格深色 UI)
-   │  pywebview (系统 WebView2)
-Python 后端 (流水线: 扫描 → 匹配 → 丰富 → 确认)
-   ├─ scanner/   Phase 1  特征提取、exe 启发式、readme 编码
-   ├─ matcher/   Phase 1  规范化 + 多策略打分 + 待确认
-   ├─ providers/ Phase 2  vndb / bgm / llm(多提供商轮询) / ocr
-   ├─ enrich/    Phase 2  AI 分析流水线 + 断点续跑任务队列
-   ├─ agent/     Phase 3  AI 管家：工具集 + 执行循环 + 合规检查
-   └─ launcher/  Phase 1  启动 / Locale Emulator / 时长统计
-SQLite (library.db, schema v3)
-```
+买了/收藏了几十上百个 Galgame，散落在硬盘各个角落：
 
-## 快速开始
+- ❓ 这文件夹里是啥游戏？哪个社出的？好玩吗？
+- 😩 想玩「纯爱 + 短时长」的，得一个个翻文件夹
+- 😱 存档放哪了？换电脑/重装系统，几十小时的存档说没就没
 
-```bash
-# 1. 后端依赖
-python -m venv venv
-venv\Scripts\pip install -r requirements.txt
+**GALA 把这些全包了**：扫一遍硬盘，自动认出每款游戏、生成中文简介和标签、统计你玩过的时长，退出游戏时自动备份存档——你只管玩。
 
-# 2. 前端依赖
-cd frontend && npm install && cd ..
+---
 
-# 3. 开发模式（vite 热更新 + pywebview）
-dev.bat
-# 或分开跑: cd frontend && npm run dev  ← 另一个终端
-#          venv\Scripts\python -m backend.app --dev
+## ✨ 核心功能
 
-# 4. 生产模式（加载构建产物）
-cd frontend && npm run build && cd ..
-run.bat
-# 或: venv\Scripts\python -m backend.app
-```
+| | 功能 | 说明（不用懂技术也能看懂） |
+|---|---|---|
+| 🖥️ | **游戏库** | 网格/列表双视图，按标签、厂商、年份筛选；收藏、随机、搜索、游玩时长一目了然 |
+| 🤖 | **AI 管家** | 像聊天一样管理库：「推荐个纯爱游戏」「这个游戏搞错了，应该叫 XX」——AI 直接帮你改好，还能识图认游戏 |
+| 🏷️ | **智能入库** | 扫描后自动匹配 VNDB / Bangumi / Steam 资料，AI 生成中文译名、简介、题材标签，匹配不上进「待确认」由你拍板 |
+| 🏭 | **厂商墙** | 按厂商浏览你的收藏，追踪关注厂商的新作动态（近 24 个月） |
+| 🎮 | **一键启动** | 自动识别主程序，支持 Locale Emulator（日文乱码救星）、启动参数，自动记录游玩时长（重启后也能补记） |
+| 💾 | **存档快照** | **关游戏自动备份存档**，每个游戏保留 20 个历史版本，随时一键回滚；支持导入他人分享的存档 |
+| 🔁 | **多 AI 轮询** | 配置多个 AI 服务商，一个限速/挂了自动切换，不怕 AI 掉线 |
+| 🛡️ | **稳定可靠** | 自动备份数据库、防多开、防误删（升级前先备份旧数据）、全程中文日志可查 |
 
-浏览器单独预览前端（不弹桌面窗口）：`cd frontend && npm run dev` 后访问 http://localhost:5173 —— api.js 会自动降级为 mock 数据。
+---
 
-## 目录
+## 🚀 快速开始（3 步）
 
-```
-backend/    Python 后端（app / api / config / db / paths）
-frontend/   Vue3 + Vite + Pinia
-scripts/    build.py 一键构建
-config/     配置文件（含 API key，不入库）
-database/   library.db
-cache/      封面 / 缩略图 / AI 结果缓存
-logs/       日志
-```
+1. **下载**：从 [Releases](https://github.com/wmc251857345-eng/GalgameAI/releases) 下载 `GalgameAI.exe`（绿色便携版，解压即用，数据都在 exe 旁边，可整个文件夹带走）
+2. **配置 AI**：打开「设置」→ 填一个 OpenAI 兼容接口的 API Key（任何 AI 中转/直连都行，可配多个自动切换）→ 点「连接自检」确认 ✓
+3. **扫描游戏库**：「设置」→ 添加你的游戏目录（如 `D:\Games`）→ 「🔍 扫描新游戏」→ 等 AI 自动整理完，去「待确认」页给低置信度的游戏拍板
 
-## 路线图
+> 💡 不配 AI Key 也能用：扫描、启动、存档备份等核心功能都正常，只是少了 AI 写简介/推荐。
 
-- **Phase 0 ✅** 骨架：pywebview + Vue3 打通、DB schema v1、Steam 风格壳层
-- **Phase 1 ✅** 扫描 / 匹配 / 待确认 / 封面下载 / 详情页 / 启动器(LE) / 时长统计
-- **Phase 2 ✅** provider 抽象 + 能力矩阵、AI 中文简介、断点续跑任务队列、手动编辑（信息/标签/封面/删除）、VNDB 刷新
-- **Phase 3 🔶** Bangumi ✅ · 统计页 ✅ · 导出/备份 ✅ · 批量补封面 ✅ · 收藏/筛选/双视图/随机 ✅ · match_cache 纠正记忆 ✅ · 失效路径重定位 ✅ · 启动补记时长 ✅ · 托盘 ✅ · 自动备份 ✅ · 连接自检 ✅ · FTS 全文搜索（待做）
-- **Phase 4 ⬜** 插件化 + PyInstaller 单 exe 打包
+---
 
-## 开发注意事项（踩过的坑）
+## 🖥️ 系统要求
 
-1. **pywebview js_api 注入有竞态**：Vue 挂载可能早于桥接注入，`store.load()` 会走到 mock 分支导致整个应用显示假数据（表现为"扫描/编辑没反应"）。前端必须 `await apiReady()`（监听 `pywebviewready` 事件 + 轮询兜底）后再拉数据。
-2. **`_game_row` / `_tags` 是模块级函数**，签名 `_game_row(g, db, with_extra=False)`，必须传 db。曾因 `_game_row` 调类方法 `_tags` 导致 `get_game` 抛 NameError、详情页永远打不开。
-3. **VNDB 评分是 0-100 制**：入库时 `_apply_match` 统一转 10 分制（>20 则 /10），展示层 `rating_disp` 兼容历史遗留原始值。
-4. **回归测试**：`scripts/verify.py`（规范验证：迁移幂等/库体验/记忆/稳定性/构建新鲜度，跑 `venv\Scripts\python scripts/verify.py`）、`scripts/test_edit_flow.py`（后端 API 全链路，DB 副本）和 `scripts/test_ui_flow.py`（隐藏 pywebview 窗口 + 注入 JS 驱动真实 UI）。改完记得跑。
-5. **删除游戏**必须级联清理 sessions/staff/screenshots/analysis_jobs 等表，并删 cache/covers 里的封面文件。
-6. **BGM API 搜索返回 `{"results":N,"list":[...]}` 字典**，不是裸列表——`isinstance(data, list)` 判断会让 bgm.search 永远空（曾导致 bgm 数据源静默失效）。
-7. **pywebview closing 事件可取消**：handler 返回 `False` → 取消关闭（用于"关窗最小化到托盘"）；托盘用 pystray `run_detached()`。
-8. **无损迁移**：新增列用 `PRAGMA table_info` 检查 + `ALTER TABLE`，不要 bump SCHEMA_VERSION（会删库重建）。favorite / match_cache.provider 都这么加的。
-9. 扫描器 exe 启发式、readme 编码（Shift-JIS/GBK）、代理（v2rayN 127.0.0.1:7897）、DoH 防 DNS 污染均已内置。
+- Windows 10 / 11（64 位）
+- 已安装 Microsoft Edge WebView2 运行时（Win11 自带，Win10 一般也有）
+- 不需要 Python、不需要装任何依赖
+
+---
+
+## 🔒 数据与隐私
+
+- 所有数据（游戏库、聊天记录、存档备份）都保存在**你自己的电脑上**（exe 旁的 `database/` 目录），不联网上传
+- 联网只发生在：匹配游戏资料（VNDB/Bangumi/Steam）、AI 生成简介、抓取厂商新作
+- API Key 只保存在本地配置文件，不会出现在 GitHub 或日志里
+- 数据库升级前自动备份旧库，绝不静默删数据
+
+---
+
+## 📦 更新日志
+
+### 2026-08-14 · v0.2.0 大更新
+
+**全新：存档快照体系**
+- 从 GALA 启动游戏，退出时**自动备份存档**（可关闭），按游戏名分类存放在 `database/backups/`
+- 每个游戏保留 20 个版本，详情页时间线随时**恢复**；恢复前自动保存当前状态，永远可反悔
+- 支持**导入存档**（文件或文件夹，比如从网上下载的完美存档）
+
+**AI 管家全面改版**
+- 左侧上下文面板：选中的游戏固定在面板里，改标题/厂商/换封面一键直达（正经表单，不再弹浏览器对话框）
+- AI 推荐/搜索结果渲染成**游戏卡片**，点封面直接进详情
+- 每次 AI 修改资料/封面，消息里出现**「↩ 撤销」**按钮，改错了随时回滚
+
+**修复的问题**
+- 修复启动游戏后日志报错、运行状态不刷新（Popen 序列化崩溃）
+- 修复聊天页无法选中复制文本
+- 修复二次扫描新增游戏"扫不出来"——现在扫描到但识别失败的游戏会明确进入「待确认」页，并带"待分析"标记
+- 修复数据库版本升级可能清空数据（升级前强制备份旧库）
+- 防止程序多开（双击两次只保留一个实例）
+- 打包版备份路径残留修正
+
+### 更早（v0.1）
+- Phase 0–3：扫描/匹配/AI 入库、Steam 风格界面、启动器+时长统计、厂商墙、统计页、导出备份、批量补封面、AI 管家初版、多提供商轮询
+
+---
+
+## ❓ 常见问题
+
+**Q：扫描后游戏没出现在列表里？**
+扫描到的新游戏会先由 AI 识别：识别成功直接入库；识别不出会出现在左侧「待确认」页（带"待分析"标记），在那里手动确认或重新分析即可。
+
+**Q：存档备份在哪？占地方吗？**
+`exe 所在目录/database/backups/<游戏名>/<时间戳>/`。每个游戏最多保留 20 份，超出自动清理最旧的，不用担心无限膨胀。
+
+**Q：AI 不认 Key / 报错？**
+「设置」→「连接自检」会逐项测 BGM/VNDB/AI/Steam 连通性。AI 报错常见原因是中转限速，配置多个服务商（多 AI 轮询）会自动切换。
+
+**Q：游戏启动乱码？**
+详情页打开「使用 Locale Emulator」开关即可（需要电脑装了 LE）。
+
+**Q：怎么迁移到新电脑？**
+整个 GALA 文件夹拷贝过去即可——数据库、封面、存档备份、配置全在 exe 旁边，不用重装。
+
+---
+
+## 👨‍💻 给开发者
+
+- 技术栈：Python 3.11 + pywebview(WebView2) + Vue3/Vite + SQLite；存档引擎 Ludusavi
+- 开发模式：`dev.bat`（vite 热更新 + pywebview）；打包：`python scripts/build.py`
+- 自检：`python scripts/verify.py`（覆盖迁移/库体验/记忆/稳定性/构建新鲜度）
+- 架构：`backend/`(Python API + 流水线) / `frontend/`(Vue3) / `scripts/`(构建与自检)
+- 数据库升级采用无损迁移（ALTER TABLE 加列），升级前强制备份旧库
+
+> ⚠️ 本项目用于管理**你自己合法拥有的游戏文件**，不包含任何游戏资源。
