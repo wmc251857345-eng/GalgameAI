@@ -22,6 +22,8 @@
         <SettingsView v-else />
       </div>
       <WorkDetailPanel />
+      <!-- feat-2 首次启动引导 -->
+      <OnboardingDialog />
     </div>
   </div>
 </template>
@@ -41,6 +43,7 @@ import WorkDetailPanel from './components/WorkDetailPanel.vue'
 import PendingView from './views/PendingView.vue'
 import StatsView from './views/StatsView.vue'
 import SettingsView from './views/SettingsView.vue'
+import OnboardingDialog from './components/OnboardingDialog.vue'
 
 const store = useLibraryStore()
 const errorBanner = ref('')

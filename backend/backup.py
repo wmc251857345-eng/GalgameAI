@@ -338,12 +338,45 @@ _SAVE_DIR_NAMES = {
 _SAVE_EXTS = {
     ".sav", ".srm", ".sol", ".dat", ".sgo", ".save", ".sds", ".nv",
     ".rpy", ".rpgsave", ".lsd", ".dsav", ".savx", ".json",
+    ".gd", ".vdf", ".slot",
 }
 # 排除的目录名（游戏根目录下这些不是存档）
 _EXCLUDE_DIR_NAMES = {"bin", "config", "cfg", "graphics", "bgm", "se", "voice",
                       "video", "movie", "movies", "font", "fonts", "patch",
                       "update", "redist", "dx9", "dx10", "dx11", "dx12",
                       "vc_redist", "plugins", "logs", "debug", "unitycrashhandler"}
+
+# _dir_size 缓存：key=(normcase路径, mtime) → 字节数
+_DIR_SIZE_CACHE: dict = {}
+
+
+def _dir_size(d: str) -> int:
+    """目录总大小（字节，递归统计，出错返回 0）。
+
+    带 (路径, mtime) 缓存：探测/备份会多次扫同一目录（尤其 Unity _Data 几千文件），
+    避免重复全盘遍历。
+    """
+    try:
+        key = (os.path.normcase(d), int(os.stat(d).st_mtime))
+    except OSError:
+        return 0
+    cached = _DIR_SIZE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(d):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    if len(_DIR_SIZE_CACHE) > 512:
+        _DIR_SIZE_CACHE.clear()
+    _DIR_SIZE_CACHE[key] = total
+    return total
 
 
 def _dir_has_save_files(d: str, depth: int = 0) -> bool:
@@ -401,15 +434,27 @@ def detect_save_paths(game: dict) -> list[dict]:
             if not os.path.isdir(full):
                 continue
             el = e.lower()
-            if el in _SAVE_DIR_NAMES and el not in _EXCLUDE_DIR_NAMES:
+            if el in _SAVE_DIR_NAMES and el not in _EXCLUDE_DIR_NAMES \
+                    and _dir_size(full) <= _MAX_SAVE_DIR_SIZE:
                 add(full, f"游戏目录内 {e}")
-        # 1b. 有存档特征文件的子目录（一层，排除常见非存档目录）
+        # 1b. 有存档特征文件的子目录（一层，排除常见非存档目录）。
+        #     体积超限的大目录（如 Unity _Data 游戏本体 4G+）本身不当存档，
+        #     改为下钻一层找其中的小存档子目录（如 _Data/SaveData 仅几百KB）
         for e in entries:
             full = os.path.join(base, e)
             if not os.path.isdir(full) or e.lower() in _EXCLUDE_DIR_NAMES:
                 continue
-            if _dir_has_save_files(full):
-                add(full, f"含存档文件 {e}")
+            if _dir_size(full) <= _MAX_SAVE_DIR_SIZE:
+                if _dir_has_save_files(full):
+                    add(full, f"含存档文件 {e}")
+            else:
+                for sub in os.listdir(full):
+                    if sub.startswith("."):
+                        continue
+                    subp = os.path.join(full, sub)
+                    if os.path.isdir(subp) and _dir_size(subp) <= _MAX_SAVE_DIR_SIZE \
+                            and _dir_has_save_files(subp):
+                        add(subp, f"含存档文件 {e}\\{sub}")
 
     # --- 第 2 层：用户文档 ---
     home = os.path.expanduser("~")
@@ -583,6 +628,12 @@ SNAPSHOT_ROOT = os.path.join(paths.BASE, "database", "backups")
 SNAPSHOT_KEEP = 20
 # 复制存档时忽略的垃圾/临时内容
 _SNAP_IGNORE = ("desktop.ini", "Thumbs.db", "*.tmp", "*.log", "$RECYCLE.BIN", "System Volume Information")
+# 快照体积防护：单存档源目录超过该值（如 Unity _Data 游戏本体 4G+）跳过整目录，
+# 只收集其中的存档特征文件；单文件超过该值同样跳过（游戏本体/素材）。
+_MAX_SAVE_DIR_SIZE = 50 * 1024 * 1024      # 50MB
+_MAX_SNAP_FILE_SIZE = 100 * 1024 * 1024   # 100MB
+# 快照总量软上限：超过则跳过本次备份并提示（防止异常目录拖垮磁盘）
+_SNAP_TOTAL_LIMIT = 1 * 1024 ** 3         # 1GB
 
 
 def _safe_name(name: str) -> str:
@@ -600,25 +651,80 @@ def snapshot_dir(db, game) -> str:
     return d
 
 
+def _small_save_subdirs(big_dir: str) -> list[str]:
+    """大目录（如 Unity _Data 游戏本体）下钻一层，找其中体积可控的存档子目录。"""
+    out = []
+    try:
+        for sub in os.listdir(big_dir):
+            if sub.startswith("."):
+                continue
+            p = os.path.join(big_dir, sub)
+            if os.path.isdir(p) and _dir_size(p) <= _MAX_SAVE_DIR_SIZE \
+                    and _dir_has_save_files(p):
+                out.append(p)
+    except OSError:
+        pass
+    return out
+
+
 def _game_save_dirs(db, game) -> list[str]:
-    """自动备份用的存档源目录（去重、只保留存在项）：
-    优先用户手动配置过的 backup_history.save_paths，再补 detect_save_paths 探测命中。"""
+    """自动备份用的存档源目录（去重、只保留存在项，带体积防护）：
+    优先用户手动配置过的 backup_history.save_paths，再补 detect_save_paths 探测命中。
+    手动配置/探测命中的目录若超过 _MAX_SAVE_DIR_SIZE（如整个 Unity _Data 游戏本体），
+    不下钻复制，改为取其下可控的小存档子目录（如 _Data/SaveData）。"""
     dirs, seen = [], set()
+
+    def consider(p: str):
+        if not p or not os.path.isdir(p):
+            return
+        if _dir_size(p) <= _MAX_SAVE_DIR_SIZE:
+            if p.lower() not in seen:
+                seen.add(p.lower())
+                dirs.append(p)
+            return
+        for sub in _small_save_subdirs(p):
+            if sub.lower() not in seen:
+                seen.add(sub.lower())
+                dirs.append(sub)
+
     meta = db.query_one("SELECT save_paths FROM backup_history WHERE game_id=?", (game["id"],))
     if meta and meta.get("save_paths"):
         try:
             for p in json.loads(meta["save_paths"] or "[]"):
-                if p and os.path.isdir(p) and p.lower() not in seen:
-                    seen.add(p.lower())
-                    dirs.append(p)
+                consider(p)
         except (ValueError, TypeError):
             pass
     for c in detect_save_paths(game):
-        p = c.get("path")
-        if p and c.get("exists") and os.path.isdir(p) and p.lower() not in seen:
-            seen.add(p.lower())
-            dirs.append(p)
+        consider(c.get("path"))
     return dirs
+
+
+def _copy_save_tree(src: str, dst: str) -> tuple[int, int]:
+    """复制存档目录：跳过垃圾文件 + 单文件超 _MAX_SNAP_FILE_SIZE 的大文件
+    （游戏本体/素材，备份它们没有意义还会撑爆磁盘）。
+    返回 (总字节, 跳过大文件数)。"""
+    total, skipped = 0, 0
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target_root = dst if rel == "." else os.path.join(dst, rel)
+        os.makedirs(target_root, exist_ok=True)
+        for f in files:
+            if f in _SNAP_IGNORE or f.startswith("~$"):
+                continue
+            full = os.path.join(root, f)
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                continue
+            if size > _MAX_SNAP_FILE_SIZE:
+                skipped += 1
+                continue
+            try:
+                shutil.copy2(full, os.path.join(target_root, f))
+                total += size
+            except OSError:
+                continue
+    return total, skipped
 
 
 def snapshot_backup(db, game, kind: str = "manual") -> dict:
@@ -626,11 +732,24 @@ def snapshot_backup(db, game, kind: str = "manual") -> dict:
 
     kind: manual（手动点击/恢复前保险）| auto（关游戏自动备份）。
     写 backup_versions + 每游戏保留 SNAPSHOT_KEEP 份（超量删最旧）。
+    体积防护：源目录超阈值自动下钻小存档子目录；单文件超 100MB 跳过；
+    预估总量超 1GB 直接拒绝（防止游戏本体被当存档拖垮磁盘）。
     """
     srcs = _game_save_dirs(db, game)
     if not srcs:
         return {"ok": False,
                 "error": "未找到该游戏的存档目录（可在详情页手动配置存档路径后再备份）"}
+    # 总量预检：估算各源目录可备份字节（小目录全量；大目录只算小存档子目录）
+    est = 0
+    for s in srcs:
+        if _dir_size(s) > _MAX_SAVE_DIR_SIZE:
+            est += sum(_dir_size(p) for p in _small_save_subdirs(s))
+        else:
+            est += _dir_size(s)
+    if est > _SNAP_TOTAL_LIMIT:
+        return {"ok": False,
+                "error": f"存档体积约 {est // (1024 ** 2)}MB，超过单次备份上限"
+                         f"（{ _SNAP_TOTAL_LIMIT // (1024 ** 2 )}MB），已跳过以防误备份游戏本体"}
     ts = time.strftime("%Y%m%d_%H%M%S")
     # 同一秒重复备份 → 加序号（游戏秒退重开场景）
     dest = os.path.join(snapshot_dir(db, game), ts)
@@ -639,7 +758,7 @@ def snapshot_backup(db, game, kind: str = "manual") -> dict:
         dest = os.path.join(snapshot_dir(db, game), f"{ts}_{i}")
         i += 1
     ts = os.path.basename(dest)
-    total = 0
+    total, big_skipped = 0, 0
     copied_dirs = []
     try:
         for s in srcs:
@@ -649,16 +768,23 @@ def snapshot_backup(db, game, kind: str = "manual") -> dict:
             while os.path.exists(d):
                 d = os.path.join(dest, f"{name}_{k}")
                 k += 1
-            shutil.copytree(s, d, ignore=shutil.ignore_patterns(*_SNAP_IGNORE))
-            copied_dirs.append(d)
-            for root, _dirs, files in os.walk(d):
-                total += sum(os.path.getsize(os.path.join(root, f)) for f in files)
+            t, sk = _copy_save_tree(s, d)
+            if t > 0:
+                copied_dirs.append(d)
+            total += t
+            big_skipped += sk
     except Exception as e:
+        shutil.rmtree(dest, ignore_errors=True)
         return {"ok": False, "error": f"备份失败: {e}"}
+    if not copied_dirs:
+        shutil.rmtree(dest, ignore_errors=True)
+        return {"ok": False,
+                "error": "存档目录为空或全部是超大文件（疑似游戏本体），已跳过备份"}
     try:
         with open(os.path.join(dest, "_meta.json"), "w", encoding="utf-8") as f:
             json.dump({"game_id": game["id"], "title": game.get("title"), "created": ts,
-                       "sources": srcs, "bytes": total, "kind": kind}, f,
+                       "sources": srcs, "bytes": total, "kind": kind,
+                       "skipped_big_files": big_skipped}, f,
                       ensure_ascii=False, indent=2)
     except OSError:
         pass
@@ -667,7 +793,8 @@ def snapshot_backup(db, game, kind: str = "manual") -> dict:
         " VALUES (?,?,?,?,?,?)",
         (game["id"], now_iso(), ts, total, "ok", kind))
     _snapshot_prune(db, game)
-    return {"ok": True, "ts": ts, "bytes": total, "dirs": len(copied_dirs), "dest": dest}
+    return {"ok": True, "ts": ts, "bytes": total, "dirs": len(copied_dirs),
+            "skipped_big_files": big_skipped, "dest": dest}
 
 
 def _snapshot_prune(db, game):

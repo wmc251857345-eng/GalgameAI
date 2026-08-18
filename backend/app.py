@@ -82,45 +82,69 @@ def _startup_tasks(cfg, db):
         print(f"[GALA] 自动备份失败: {e}")
 
 def _start_tray(window):
-    """系统托盘：显示/隐藏 + 退出。关窗默认最小化到托盘（closing 事件返回 False 取消关闭）。"""
+    """系统托盘：显示/隐藏 + 退出。关窗默认最小化到托盘（closing 事件返回 False 取消关闭）。
+
+    返回 True = 托盘已就绪；False = 托盘不可用（打包缺依赖等），
+    调用方负责关窗兜底（弹窗确认，避免点 × 直接杀应用）。
+    """
     try:
         from PIL import Image, ImageDraw
         import pystray
     except Exception as e:
         print(f"[GALA] 托盘不可用: {e}")
-        return
-    img = Image.new("RGBA", (64, 64), (23, 26, 33, 255))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle([6, 6, 58, 58], radius=12, fill=(102, 192, 244, 255))
-    d.polygon([(24, 20), (24, 44), (46, 32)], fill=(16, 19, 25, 255))
+        logging.warning("托盘不可用（关窗将弹窗确认）: %s", e)
+        return False
+    try:
+        img = Image.new("RGBA", (64, 64), (23, 26, 33, 255))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle([6, 6, 58, 58], radius=12, fill=(102, 192, 244, 255))
+        d.polygon([(24, 20), (24, 44), (46, 32)], fill=(16, 19, 25, 255))
 
-    quit_flag = {"q": False}
+        quit_flag = {"q": False}
 
-    def on_toggle(icon, item):
-        if window.hidden:
-            window.show()
-        else:
-            window.hide()
+        def on_toggle(icon, item):
+            if window.hidden:
+                window.show()
+            else:
+                window.hide()
 
-    def on_quit(icon, item):
-        quit_flag["q"] = True
-        icon.stop()
-        window.destroy()
+        def on_quit(icon, item):
+            quit_flag["q"] = True
+            icon.stop()
+            window.destroy()
 
-    menu = pystray.Menu(
-        pystray.MenuItem("显示 / 隐藏 GALA", on_toggle, default=True),
-        pystray.MenuItem("退出", on_quit),
-    )
-    icon = pystray.Icon("gala", img, "GALA — Galgame AI Library", menu)
+        menu = pystray.Menu(
+            pystray.MenuItem("显示 / 隐藏 GALA", on_toggle, default=True),
+            pystray.MenuItem("退出", on_quit),
+        )
+        icon = pystray.Icon("gala", img, "GALA — Galgame AI Library", menu)
 
+        def on_closing():
+            if not quit_flag["q"]:
+                window.hide()  # 关窗 → 缩到托盘
+                return False
+            return None  # 允许真正退出
+
+        window.events.closing += on_closing
+        icon.run_detached()
+        return True
+    except Exception as e:
+        print(f"[GALA] 托盘启动失败: {e}")
+        logging.warning("托盘启动失败（关窗将弹窗确认）: %s", e)
+        return False
+
+
+def _close_fallback(window):
+    """托盘不可用时的关窗兜底：弹窗确认，防止误点 × 直接杀掉整个应用
+    （后台时长监控/自动备份线程会全没）。"""
     def on_closing():
-        if not quit_flag["q"]:
-            window.hide()  # 关窗 → 缩到托盘
+        r = window.evaluate_js(
+            "(() => window.confirm('退出 GALA？\\n\\n"
+            "（托盘不可用，关闭后时长监控与自动备份将停止）'))()")
+        if r is False:
             return False
-        return None  # 允许真正退出
-
+        return None
     window.events.closing += on_closing
-    icon.run_detached()
 
 
 def _single_instance():
@@ -203,7 +227,8 @@ def main():
     jsapi._window = window  # 供文件对话框等使用
 
     threading.Thread(target=_startup_tasks, args=(cfg, db), daemon=True).start()
-    _start_tray(window)
+    if not _start_tray(window):
+        _close_fallback(window)  # 托盘不可用 → 关窗弹窗确认（防误点 × 杀应用）
 
     webview.start()
     print("[GALA] 已退出")

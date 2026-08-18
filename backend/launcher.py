@@ -57,18 +57,32 @@ def launch(db, game, cfg=None):
     return {"ok": True, "pid": p.pid}
 
 
-def _finalize(db, game_id, session_id, started, ended=None, seconds=None):
-    """结算一条 session：写 ended_at/seconds 并累加到游戏总时长。"""
+def _finalize(db, game_id, session_id, started, ended=None, seconds=None, estimated=False):
+    """结算一条 session：写 ended_at/seconds 并累加到游戏总时长。
+
+    estimated=True（进程已消失、真实结束时刻未知）：
+    - gap ≤ 24h 的按实际 gap 计入时长（当天会话，误差可接受）
+    - gap > 24h 的陈年孤儿（应用被关后隔天才重启）→ 只标记结束、不计时长，
+      避免按"上限 8 小时"凭空伪造游玩记录
+    """
     ended = ended or now_iso()
     if seconds is None:
         try:
             seconds = max(0, int(time.time() - time.mktime(time.strptime(started, "%Y-%m-%d %H:%M:%S"))))
         except (ValueError, OSError):
             seconds = 0
-    db.execute("UPDATE sessions SET ended_at=?, seconds=? WHERE id=? AND ended_at IS NULL",
-               (ended, seconds, session_id))
-    db.execute("UPDATE games SET playtime_seconds = playtime_seconds + ?, last_played=? WHERE id=?",
-               (seconds, ended, game_id))
+    counted = seconds
+    if estimated and seconds > 24 * 3600:
+        counted = 0  # 陈年孤儿不计时长
+    if estimated:
+        db.execute("UPDATE sessions SET ended_at=?, seconds=?, estimated=1 WHERE id=? AND ended_at IS NULL",
+                   (ended, seconds, session_id))
+    else:
+        db.execute("UPDATE sessions SET ended_at=?, seconds=? WHERE id=? AND ended_at IS NULL",
+                   (ended, seconds, session_id))
+    if counted > 0:
+        db.execute("UPDATE games SET playtime_seconds = playtime_seconds + ?, last_played=? WHERE id=?",
+                   (counted, ended, game_id))
 
 
 def _auto_snapshot(db, game_id, cfg):
@@ -139,7 +153,10 @@ def _exe_alive(exe_path):
 def reconcile(db):
     """启动时补记上次未结算的 session：
     - exe 进程还活着 → 继续跟踪（轮询进程消失时结算）
-    - 进程已不在 → 按启动时刻估算结算（上限 8 小时，避免隔夜误计）
+    - 进程已不在 → 估算结算：
+      gap ≤ 24h 按实际时长计入（当天会话）；
+      gap > 24h 的陈年孤儿只标记结束、不计时长（estimated=1），
+      避免按旧逻辑"上限 8 小时"凭空伪造游玩时长
     """
     orphans = db.query(
         "SELECT s.id, s.game_id, s.started_at, g.exe_path"
@@ -150,13 +167,17 @@ def reconcile(db):
             threading.Thread(target=_poll_alive,
                              args=(db, s["id"], s["game_id"], s["started_at"], s.get("exe_path")),
                              daemon=True).start()
+            continue
+        try:
+            gap = time.time() - time.mktime(time.strptime(s["started_at"], "%Y-%m-%d %H:%M:%S"))
+        except (ValueError, OSError):
+            gap = 0
+        if gap > 24 * 3600:
+            # 陈年孤儿：只标记结束（结束时刻用发现时刻），不碰游戏总时长/最后游玩
+            db.execute("UPDATE sessions SET ended_at=?, seconds=0, estimated=1"
+                       " WHERE id=? AND ended_at IS NULL", (now_iso(), s["id"]))
         else:
-            try:
-                gap = time.time() - time.mktime(time.strptime(s["started_at"], "%Y-%m-%d %H:%M:%S"))
-            except (ValueError, OSError):
-                gap = 0
-            _finalize(db, s["game_id"], s["id"], s["started_at"],
-                      seconds=min(max(0, int(gap)), 8 * 3600))
+            _finalize(db, s["game_id"], s["id"], s["started_at"], estimated=True)
 
 
 def _poll_alive(db, session_id, game_id, started, exe_path):

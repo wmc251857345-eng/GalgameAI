@@ -109,6 +109,13 @@ TOOLS = [
             "year": {"type": "string", "description": "发售年份 YYYY（用户提供了才填，可空）"},
         }, "required": ["title"]}}},
     {"type": "function", "function": {
+        "name": "mark_play_state",
+        "description": "标记游戏的游玩进度：state=1 进行中 / 2 已通关 / 0 未开始。用户说'玩完了/通关了/弃了/开始玩'时用。",
+        "parameters": {"type": "object", "properties": {
+            "id": {"type": "integer"},
+            "state": {"type": "integer", "enum": [0, 1, 2]},
+        }, "required": ["id", "state"]}}},
+    {"type": "function", "function": {
         "name": "list_makers",
         "description": "列出本地库全部制作组的规范名（含游戏数、别名写法、vndb_id），用于发现同一厂商的中/英/日文重复写法",
         "parameters": {"type": "object", "properties": {}}}},
@@ -398,6 +405,21 @@ class AgentService:
         return {"ok": True, "canonical": r["canonical"],
                 "_summary": f"已合并「{src}」→「{r['canonical']}」，该厂商的游戏/关注/别名全部统一"}
 
+    def _tool_mark_play_state(self, args):
+        gid = int(args.get("id"))
+        state = int(args.get("state"))
+        if state not in (0, 1, 2):
+            return {"error": "state 必须是 0/1/2"}
+        g = self._db.query_one("SELECT title FROM games WHERE id=?", (gid,))
+        if not g:
+            return {"error": f"游戏不存在: {gid}"}
+        r = self._api.set_play_state(gid, state)
+        if not r.get("ok"):
+            return {"error": r.get("error", "标记失败")}
+        labels = {0: "未开始", 1: "进行中", 2: "已通关"}
+        return {"ok": True, "play_state": state,
+                "_summary": f"已把《{g['title']}》标记为{labels[state]}"}
+
     _TOOL_FN = {
         "search_games": _tool_search_games,
         "get_game": _tool_get_game,
@@ -411,6 +433,7 @@ class AgentService:
         "import_game": _tool_import_game,
         "list_makers": _tool_list_makers,
         "merge_makers": _tool_merge_makers,
+        "mark_play_state": _tool_mark_play_state,
     }
 
     # ---------- 对话主循环 ----------

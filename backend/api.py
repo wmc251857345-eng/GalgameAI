@@ -11,7 +11,7 @@ import time
 from . import launcher, paths
 from .utils import normalize, now_iso
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 BASE_URL = "http://127.0.0.1:0"  # app.py 启动 HTTP 服务后写入
 
 _scan_thread = None
@@ -185,12 +185,21 @@ class JsApi:
         return "pong"
 
     def get_app_info(self):
+        import os as _os
+        ver = {"version": VERSION, "build_date": "", "git": ""}
+        try:  # 构建期 version.json（feat-3 版本自检）
+            with open(_os.path.join(_p.BASE, "version.json"), encoding="utf-8") as f:
+                import json as _json
+                ver.update(_json.load(f))
+        except Exception:
+            pass
         return {
             "name": "GALA", "version": VERSION,
             "python": __import__("sys").version.split()[0],
             "platform": __import__("platform").system(),
             "db_path": self._db.path,
             "base_url": BASE_URL,
+            "build": ver,
         }
 
     # ---------- 配置 ----------
@@ -200,6 +209,23 @@ class JsApi:
     def set_config(self, key, value):
         self._cfg.set(key, value)
         return self._cfg.as_dict()
+
+    # ---------- 首次启动引导（feat-2） ----------
+    def onboarding_status(self):
+        """返回 {done, roots, has_keys}：是否已完成引导 + 引导检查项。"""
+        roots = self._cfg.get("library_roots") or []
+        has_keys = bool(self._cfg.get("provider.api_key")) or any(
+            (p.get("api_key") or "") for p in (self._cfg.get("providers") or []))
+        return {
+            "done": bool(self._cfg.get("onboarding_done")),
+            "has_roots": bool(roots),
+            "has_keys": has_keys,
+            "total": self._db.query_one("SELECT COUNT(*) c FROM games")["c"],
+        }
+
+    def onboarding_complete(self):
+        self._cfg.set("onboarding_done", True)
+        return {"ok": True}
 
     # ---------- 库 ----------
     def get_library_summary(self):
@@ -211,6 +237,8 @@ class JsApi:
             "confirmed": one("SELECT COUNT(*) c FROM games WHERE status=2")["c"],
             "playtime_hours": round(one("SELECT COALESCE(SUM(playtime_seconds),0) s FROM games")["s"] / 3600, 1),
             "makers": one("SELECT COUNT(DISTINCT maker) c FROM games WHERE maker IS NOT NULL AND maker!=''")["c"],
+            "playing": one("SELECT COUNT(*) c FROM games WHERE play_state=1")["c"],
+            "beaten": one("SELECT COUNT(*) c FROM games WHERE play_state=2")["c"],
         }
 
     def get_stats(self):
@@ -356,6 +384,22 @@ class JsApi:
         nv = 0 if g["favorite"] else 1
         self._db.execute("UPDATE games SET favorite=? WHERE id=?", (nv, gid))
         return {"ok": True, "favorite": nv}
+
+    # 游玩进度：0 未开始 / 1 进行中 / 2 已通关
+    PLAY_STATES = {0: "未开始", 1: "进行中", 2: "已通关"}
+
+    def set_play_state(self, game_id, state):
+        gid = int(game_id)
+        g = self._db.query_one("SELECT id, play_state FROM games WHERE id=?", (gid,))
+        if not g:
+            return {"ok": False, "error": "游戏不存在"}
+        st = int(state)
+        if st not in self.PLAY_STATES:
+            return {"ok": False, "error": "状态值非法"}
+        # 进入"进行中"且尚无游玩记录 → 自动开一条 session（与"启动游戏"一致）
+        self._db.execute("UPDATE games SET play_state=? WHERE id=?", (st, gid))
+        return {"ok": True, "play_state": st,
+                "label": self.PLAY_STATES[st]}
 
     def get_game(self, game_id):
         g = self._db.query_one("SELECT * FROM games WHERE id=?", (int(game_id),))

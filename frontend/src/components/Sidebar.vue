@@ -26,7 +26,11 @@
       </button>
     </nav>
     <div class="sidebar-footer">
-      <div class="ver">v{{ appInfo.version }} · 本地库 · {{ appInfo.platform }}</div>
+      <div class="ver" title="版本自检：构建版本 · 日期 · git 提交" @click="$emit('nav', 'settings')">
+        v{{ appInfo.version }}{{ appInfo.build?.build_date ? ' · ' + appInfo.build.build_date : '' }}
+        {{ appInfo.build?.git ? ' · ' + appInfo.build.git : '' }}
+      </div>
+      <div class="ver sub">本地库 · {{ appInfo.platform }}</div>
     </div>
   </aside>
 </template>

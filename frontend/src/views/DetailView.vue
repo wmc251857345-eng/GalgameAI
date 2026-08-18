@@ -83,6 +83,12 @@
               <button class="btn" :class="{ 'fav-on': g.favorite }" @click="toggleFav">
                 {{ g.favorite ? '♥ 已收藏' : '♡ 收藏' }}
               </button>
+              <select class="ps-select" :value="g.play_state || 0" title="游玩进度"
+                @change="setPlayState($event)">
+                <option :value="0">未开始</option>
+                <option :value="1">🎮 进行中</option>
+                <option :value="2">🏆 已通关</option>
+              </select>
               <button class="btn" :disabled="reanalyzing" @click="reanalyze">
                 {{ reanalyzing ? '⟳ 分析中…' : '⟳ 重新 AI 分析' }}
               </button>
@@ -388,6 +394,13 @@ async function useCandCover(url) {
 // ---- 动作 ----
 async function toggleFav() {
   await store.toggleFavorite(g.value)
+  store.load()
+}
+
+async function setPlayState(e) {
+  const st = Number(e.target.value)
+  const r = await store.setPlayState(g.value, st)
+  if (r && !r.ok) alert(r.error || '标记失败')
   store.load()
 }
 

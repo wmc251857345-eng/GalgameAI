@@ -102,29 +102,34 @@
                   @click.stop="undoAct(m, a)"
                 >↩ 撤销</button>
               </span>
-              <!-- 推荐/搜索结果 → 游戏卡片 -->
-              <div v-for="(a, j) in m.actions" :key="'rec' + j" v-if="a.extra && a.extra.games" class="chat-rec">
-                <div
-                  v-for="gd in a.extra.games"
-                  :key="gd.id"
-                  class="chat-rec-card"
-                  @click="store.openDetail(gd.id)"
-                >
-                  <img v-if="gd.cover_url" :src="gd.cover_url" class="chat-rec-cover" v-imgfb="''" alt="" />
-                  <div v-else class="chat-rec-cover chat-rec-empty">🎮</div>
-                  <div class="chat-rec-info">
-                    <div class="chat-rec-title">{{ gd.title }}</div>
-                    <div class="chat-rec-meta">
-                      {{ gd.maker || '—' }} · {{ (gd.released || '').slice(0, 4) || '—' }}
-                      <template v-if="gd.rating">· {{ gd.rating }} 分</template>
-                    </div>
-                    <div class="chat-rec-tags">
-                      <span v-for="t in (gd.tags || []).slice(0, 4)" :key="t" class="chat-rec-tag">{{ t }}</span>
-                      <span v-if="gd.playtime_hours" class="chat-rec-tag">{{ gd.playtime_hours }}h</span>
+              <!-- 推荐/搜索结果 → 游戏卡片
+                   坑：v-for + v-if 不能写同一元素（Vue3 中 v-if 先求值，a 还是 undefined
+                   → TypeError: Cannot read properties of undefined (reading 'extra')）。
+                   标准解法：外层 template v-for，内层元素 v-if。 -->
+              <template v-for="(a, j) in m.actions" :key="'rec' + j">
+                <div v-if="a.extra && a.extra.games" class="chat-rec">
+                  <div
+                    v-for="gd in a.extra.games"
+                    :key="gd.id"
+                    class="chat-rec-card"
+                    @click="store.openDetail(gd.id)"
+                  >
+                    <img v-if="gd.cover_url" :src="gd.cover_url" class="chat-rec-cover" v-imgfb="''" alt="" />
+                    <div v-else class="chat-rec-cover chat-rec-empty">🎮</div>
+                    <div class="chat-rec-info">
+                      <div class="chat-rec-title">{{ gd.title }}</div>
+                      <div class="chat-rec-meta">
+                        {{ gd.maker || '—' }} · {{ (gd.released || '').slice(0, 4) || '—' }}
+                        <template v-if="gd.rating">· {{ gd.rating }} 分</template>
+                      </div>
+                      <div class="chat-rec-tags">
+                        <span v-for="t in (gd.tags || []).slice(0, 4)" :key="t" class="chat-rec-tag">{{ t }}</span>
+                        <span v-if="gd.playtime_hours" class="chat-rec-tag">{{ gd.playtime_hours }}h</span>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
+              </template>
             </div>
             <img v-if="m.image" :src="m.image" class="chat-img" alt="聊天图片" />
             <div v-if="m.role === 'assistant' && !m.error" class="chat-text md-body" v-html="md(m.content)"></div>
@@ -200,12 +205,14 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useLibraryStore } from '../stores/library.js'
 import { api } from '../api.js'
 import { md, mdPlain } from '../utils/md.js'
 
 const store = useLibraryStore()
+// 启动时拉一次历史聊天记录（chat_messages 持久化在库中），loaded 防重复
+onMounted(() => { store.chatLoad() })
 const input = ref('')
 const chatBox = ref(null)
 const inputEl = ref(null)

@@ -81,7 +81,20 @@ export const api = {
 
   async getAppInfo() {
     if (hasBridge()) return window.pywebview.api.get_app_info()
-    return { name: 'GALA', version: '0.2.0', python: '3.11.9', platform: 'browser-mock', db_path: '(mock)', base_url: '' }
+    return { name: 'GALA', version: '0.3.0', python: '3.11.9', platform: 'browser-mock', db_path: '(mock)', base_url: '',
+            build: { version: '0.3.0', build_date: '', git: '' } }
+  },
+
+  // 首次启动引导（feat-2）
+  async onboardingStatus() {
+    if (hasBridge()) return window.pywebview.api.onboarding_status()
+    await delay()
+    return { done: true, has_roots: true, has_keys: true, total: 0 }
+  },
+
+  async onboardingComplete() {
+    if (hasBridge()) return window.pywebview.api.onboarding_complete()
+    return { ok: true }
   },
 
   // 配置
@@ -395,6 +408,13 @@ export const api = {
     if (hasBridge()) return window.pywebview.api.toggle_favorite(id)
     await delay()
     return { ok: true, favorite: true }
+  },
+
+  // 游玩进度：0未开始 / 1进行中 / 2已通关
+  async setPlayState(id, state) {
+    if (hasBridge()) return window.pywebview.api.set_play_state(id, state)
+    await delay()
+    return { ok: true, play_state: state }
   },
 
   async getLibraryFacets() {

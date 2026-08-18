@@ -231,6 +231,8 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .status-badge.skip { background: rgba(143, 152, 160, .2); color: var(--text-dim); }
 .status-badge.hanhua { background: rgba(102, 192, 244, .18); color: var(--accent); }
 .status-badge.running { background: rgba(46, 204, 113, .2); color: #2ecc71; }
+.status-badge.playing { background: rgba(255, 158, 0, .2); color: #ffa726; }
+.status-badge.beaten { background: rgba(255, 215, 0, .2); color: #ffd54f; }
 .info-table { border-collapse: collapse; font-size: 13px; margin-bottom: 16px; }
 .info-table td { padding: 4px 14px 4px 0; vertical-align: top; }
 .info-table td:first-child { color: var(--text-dim); white-space: nowrap; }

@@ -29,14 +29,24 @@ def main():
 
     # 2/3 PyInstaller 打包（onedir 便携结构）
     print("== 2/3 PyInstaller 打包 ==")
+    # 版本号直接读源码字面量（不 import backend，避免脚本环境缺依赖/慢启动）
+    import re as _re
+    with open(os.path.join(BASE, "backend", "api.py"), encoding="utf-8") as f:
+        m = _re.search(r'^VERSION\s*=\s*["\']([^"\']+)', f.read(), _re.M)
+    VERSION = m.group(1) if m else "0.0.0"
     cmd = (
         f'"{sys.executable}" -m PyInstaller '
         "--noconfirm --clean "
         '--name GalgameAI '
         "--windowed "          # 无控制台窗口
-        "--onedir "            # 目录结构（启动快、便于排错；exe 旁放便携数据）
+        "--onedir "           # 目录结构（启动快、便于排错；exe 旁放便携数据）
         # pywebview 动态选择平台后端，必须显式收集 winforms
         '--hidden-import webview.platforms.winforms '
+        # 系统托盘（pystray 走 win32 ctypes，动态加载需显式收集，否则打包版托盘静默失效）
+        "--hidden-import pystray --hidden-import pystray._win32 "
+        # collect-all 双保险：环境 PYTHONPATH 被 Hermes venv 遮蔽时静态分析可能漏收，
+        # 强制整包收集（pystray 是纯 Python 小包，代价可忽略）
+        "--collect-all pystray "
         f'"{os.path.join(BASE, "main.py")}"'
     )
     run(cmd)
@@ -47,6 +57,24 @@ def main():
     if os.path.exists(dst):
         shutil.rmtree(dst)
     shutil.copytree(os.path.join(BASE, "frontend", "dist"), dst)
+
+    # 3.5 版本清单：构建时写入 version.json（版本号+构建日期+git短哈希），
+    # 供前端"版本自检"展示，也便于排查"我装的到底是不是最新版"
+    print("== 3.5 写版本清单 ==")
+    import datetime as _dt
+    git_sha = ""
+    try:
+        import subprocess as _sp
+        git_sha = _sp.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=BASE,
+            stderr=_sp.DEVNULL).decode().strip()
+    except Exception:
+        pass
+    import json as _json
+    with open(os.path.join(OUT, "version.json"), "w", encoding="utf-8") as f:
+        _json.dump({"version": VERSION, "build_date": _dt.date.today().isoformat(),
+                    "git": git_sha}, f, ensure_ascii=False, indent=2)
+    print(f"  version.json ← v{VERSION} ({git_sha or 'no-git'})")
 
     # 4/4 便携数据迁移：PyInstaller --clean 会删掉 dist 目录里的 database/cache/config，
     # 打包后从开发库自动回填（已有数据则跳过，保留用户改动的便携数据）

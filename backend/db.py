@@ -31,7 +31,8 @@ CREATE INDEX IF NOT EXISTS idx_games_vndb ON games(vndb_id);
 
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    game_id INTEGER, started_at TEXT, ended_at TEXT, seconds INTEGER
+    game_id INTEGER, started_at TEXT, ended_at TEXT, seconds INTEGER,
+    estimated INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_game ON sessions(game_id);
 
@@ -218,6 +219,14 @@ class Database:
         if "kind" not in cols:
             # 快照类型：manual（手动/引擎备份）| auto（关游戏自动备份）
             conn.execute("ALTER TABLE backup_versions ADD COLUMN kind TEXT DEFAULT 'manual'")
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
+        if "estimated" not in cols:
+            # 估算结算标记：孤儿会话由 reconcile 按估算补记时置 1（不计入总时长）
+            conn.execute("ALTER TABLE sessions ADD COLUMN estimated INTEGER DEFAULT 0")
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(games)")}
+        if "play_state" not in cols:
+            # 游玩进度：0 未开始 / 1 进行中 / 2 已通关（Galgame 库核心管理维度）
+            conn.execute("ALTER TABLE games ADD COLUMN play_state INTEGER DEFAULT 0")
 
     def query(self, sql, params=()):
         with self._lock:

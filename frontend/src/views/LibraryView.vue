@@ -110,6 +110,8 @@
         <div class="list-cell list-score">{{ g.score != null ? '★ ' + g.score : '—' }}</div>
         <div class="list-cell list-time">{{ g.playtime_hours }}h</div>
         <div class="list-badges">
+          <span v-if="g.play_state === 2" class="status-badge beaten">🏆 通关</span>
+          <span v-else-if="g.play_state === 1" class="status-badge playing">🎮 进行中</span>
           <span v-if="g.status === 0" class="status-badge analyze">⚙ 待分析</span>
           <span v-if="g.status === 2" class="status-badge ok">✓ 已入库</span>
           <span v-else-if="g.status === 1" class="status-badge warn">待确认</span>
@@ -234,6 +236,8 @@ const tabs = computed(() => [
   { id: 2, label: '已入库', count: store.summary.confirmed },
   { id: 1, label: '待确认', count: store.summary.pending },
   { id: 'fav', label: '♥ 收藏' },
+  { id: 'ps1', label: '🎮 进行中', count: store.summary.playing },
+  { id: 'ps2', label: '🏆 已通关', count: store.summary.beaten },
   { id: 3, label: '已跳过' },
 ])
 

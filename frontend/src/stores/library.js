@@ -9,14 +9,14 @@ export const useLibraryStore = defineStore('library', {
     search: '',
     sort: (() => { try { return localStorage.getItem('gala_sort') || 'company' } catch { return 'company' } })(),
     sortDir: (() => { try { return localStorage.getItem('gala_sortDir') || 'desc' } catch { return 'desc' } })(),
-    filterStatus: 'all',   // all | 2(已入库) | 1(待确认) | 3(已跳过) | fav(收藏)
+    filterStatus: 'all',   // all | 2(已入库) | 1(待确认) | 3(已跳过) | fav(收藏) | ps0/1/2(游玩进度)
     filterTag: '',
     filterMaker: '',
     filterYear: '',
     viewMode: 'grid',      // grid | list
     facets: { tags: [], makers: [], years: [] },
     missingPaths: [],
-    chat: { messages: [], sending: false, contextGame: null },
+    chat: { messages: [], sending: false, contextGame: null, loaded: false },
     currentView: 'library', // library | detail | pending | stats | settings | chat | maker | makers
     maker: { mode: 'maker', key: null, profile: null, loading: false, error: null },
     makers: { list: [], loading: false },
@@ -54,6 +54,10 @@ export const useLibraryStore = defineStore('library', {
         )
       }
       if (state.filterStatus === 'fav') list = list.filter((g) => g.favorite)
+      else if (state.filterStatus === 'ps0' || state.filterStatus === 'ps1' || state.filterStatus === 'ps2') {
+        const ps = Number(state.filterStatus.slice(2))
+        list = list.filter((g) => (g.play_state || 0) === ps)
+      }
       else if (state.filterStatus !== 'all') list = list.filter((g) => g.status === state.filterStatus)
       if (state.filterTag) list = list.filter((g) => (g.tags || []).includes(state.filterTag))
       if (state.filterMaker) list = list.filter((g) => g.maker === state.filterMaker)
@@ -124,6 +128,18 @@ export const useLibraryStore = defineStore('library', {
         g.favorite = r.favorite
         if (this.detail && this.detail.id === g.id) this.detail.favorite = r.favorite
       }
+    },
+
+    // 标记游玩进度（0未开始/1进行中/2已通关）：改完同步列表+详情
+    async setPlayState(g, state) {
+      const r = await api.setPlayState(g.id, state)
+      if (r && r.ok) {
+        g.play_state = r.play_state
+        if (this.detail && this.detail.id === g.id) this.detail.play_state = r.play_state
+        this.summary.playing = this.games.filter((x) => (x.play_state || 0) === 1).length
+        this.summary.beaten = this.games.filter((x) => (x.play_state || 0) === 2).length
+      }
+      return r
     },
 
     // 删除游戏（右键菜单 / 详情页）：清库 + 刷新 + 若正打开详情则返回
@@ -385,7 +401,9 @@ export const useLibraryStore = defineStore('library', {
 
     // ---- AI 管家 ----
     async chatLoad() {
+      if (this.chat.loaded) return  // 已加载过，不重复拉
       this.chat.messages = await api.chatHistory()
+      this.chat.loaded = true
     },
 
     async chatSend(text, image) {
@@ -427,6 +445,7 @@ export const useLibraryStore = defineStore('library', {
     async chatClear() {
       await api.chatClear()
       this.chat.messages = []
+      this.chat.loaded = true
     },
 
     setChatContext(g) {
