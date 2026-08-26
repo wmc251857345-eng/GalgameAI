@@ -551,6 +551,7 @@ const updateMsg = computed(() => {
   if (store.update.checking) return ''
   if (!info) return ''
   if (info.has_update) return `🆕 发现新版本 ${info.latest}（当前 v${updCurrent.value}），点击侧栏提示或下方链接获取`
+  if (info.ok && info.note) return info.note
   if (info.ok) return '已是最新版本 ✓'
   return `检查失败：${info.error || '网络不可用'}（不影响使用，可稍后再试）`
 })

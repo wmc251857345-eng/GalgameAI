@@ -2371,6 +2371,10 @@ class JsApi:
                     "url": data.get("html_url") or
                     "https://github.com/wmc251857345-eng/GalgameAI/releases",
                 })
+            elif r.status_code == 404:
+                # 仓库还没发布过任何 Release：不算错误，静默视为最新
+                result.update({"ok": True, "latest": None, "has_update": False,
+                               "url": "", "note": "尚未发布任何版本"})
             else:
                 result["error"] = f"HTTP {r.status_code}"
         except Exception as e:
