@@ -406,8 +406,15 @@ class AgentService:
                 "_summary": f"已合并「{src}」→「{r['canonical']}」，该厂商的游戏/关注/别名全部统一"}
 
     def _tool_mark_play_state(self, args):
-        gid = int(args.get("id"))
-        state = int(args.get("state"))
+        # LLM 传参可能缺 id/state（或传了非数字），int(None) 直接 TypeError 会炸整个工具调用
+        try:
+            gid = int(args.get("id"))
+        except (TypeError, ValueError):
+            return {"error": "缺少有效的游戏 id"}
+        try:
+            state = int(args.get("state"))
+        except (TypeError, ValueError):
+            return {"error": "state 必须是 0/1/2"}
         if state not in (0, 1, 2):
             return {"error": "state 必须是 0/1/2"}
         g = self._db.query_one("SELECT title FROM games WHERE id=?", (gid,))

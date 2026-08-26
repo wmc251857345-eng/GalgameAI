@@ -5,6 +5,11 @@
       <span class="count">{{ store.filteredGames.length }} / {{ store.summary.total }} 部</span>
       <div class="head-actions">
         <button class="btn small" @click="importOpen = true">＋ 导入游戏</button>
+        <button
+          class="btn small"
+          :class="{ primary: store.selection.length > 0 }"
+          @click="toggleSelectMode"
+        >{{ selectMode ? '✕ 退出批量' : '☑ 批量' }}</button>
         <button v-if="store.filterStatus === 3" class="btn small danger-soft" @click="clearSkipped">
           🗑 清空已跳过
         </button>
@@ -70,6 +75,12 @@
 
     <div v-if="store.loading" class="loading">加载中…</div>
 
+    <!-- 加载失败：显示原因 + 重试（不再误显示"没有找到游戏"） -->
+    <div v-else-if="store.loadError" class="detail-error">
+      <p>⚠ 游戏库加载失败：{{ store.loadError }}</p>
+      <button class="btn" @click="store.load()">🔄 重试</button>
+    </div>
+
     <div v-else-if="store.filteredGames.length === 0" class="empty">
       <div class="empty-icon">▤</div>
       <p>没有找到游戏</p>
@@ -82,7 +93,10 @@
         v-for="g in store.filteredGames"
         :key="g.id"
         :game="g"
-        @open="store.openDetail"
+        :selectable="selectMode"
+        :selected="store.selection.includes(g.id)"
+        @open="(id) => selectMode ? store.toggleSelect(id) : store.openDetail(id)"
+        @toggle-select="store.toggleSelect"
         @fav="store.toggleFavorite"
         @launch="launch(g)"
         @ctx="openCtx"
@@ -95,9 +109,16 @@
         v-for="g in store.filteredGames"
         :key="g.id"
         class="list-row"
-        @click="store.openDetail(g.id)"
+        :class="{ selected: selectMode && store.selection.includes(g.id) }"
+        @click="selectMode ? store.toggleSelect(g.id) : store.openDetail(g.id)"
         @contextmenu.prevent="openCtx($event, g)"
       >
+        <span
+          v-if="selectMode"
+          class="list-check"
+          :class="{ on: store.selection.includes(g.id) }"
+          @click.stop="store.toggleSelect(g.id)"
+        >{{ store.selection.includes(g.id) ? '☑' : '☐' }}</span>
         <span class="list-fav" :class="{ on: g.favorite }" @click.stop="store.toggleFavorite(g)">♥</span>
         <img v-if="g.cover_url" :src="g.cover_url" class="list-cover" alt="" v-imgfb="''" />
         <div v-else class="list-cover list-cover-empty"></div>
@@ -107,8 +128,12 @@
         </div>
         <div class="list-cell list-maker">{{ g.maker || '—' }}</div>
         <div class="list-cell list-year">{{ (g.released || '').slice(0, 4) || '—' }}</div>
-        <div class="list-cell list-score">{{ g.score != null ? '★ ' + g.score : '—' }}</div>
-        <div class="list-cell list-time">{{ g.playtime_hours }}h</div>
+        <div class="list-cell list-score">
+          <span v-if="g.user_rating" class="my-stars" title="我的评分">{{ '★'.repeat(g.user_rating) }}{{ '☆'.repeat(5 - g.user_rating) }}</span>
+          <span v-else-if="g.score != null">★ {{ g.score }}</span>
+          <span v-else>—</span>
+        </div>
+        <div class="list-cell list-time">{{ g.playtime_hours ?? 0 }}h</div>
         <div class="list-badges">
           <span v-if="g.play_state === 2" class="status-badge beaten">🏆 通关</span>
           <span v-else-if="g.play_state === 1" class="status-badge playing">🎮 进行中</span>
@@ -134,6 +159,26 @@
       <button class="ctx-item" @click="ctxCover">🖼 修改封面</button>
       <button v-if="ctxMenu.game.exe_path" class="ctx-item" @click="ctxLaunch">▶ 启动游戏</button>
       <button class="ctx-item danger" @click="ctxDelete">🗑 删除（仅移出库）</button>
+    </div>
+
+    <!-- 批量操作条（v1.1）：选中 > 0 时浮现 -->
+    <div v-if="store.selection.length" class="batch-bar">
+      <span class="bb-count">已选 {{ store.selection.length }} 款</span>
+      <button class="btn small" @click="store.selectAll()">全选当前</button>
+      <span class="bb-sep">|</span>
+      <button class="btn small" @click="batchPlay(1)">🎮 进行中</button>
+      <button class="btn small" @click="batchPlay(2)">🏆 已通关</button>
+      <button class="btn small" @click="batchPlay(0)">⏹ 未开始</button>
+      <span class="bb-sep">|</span>
+      <input
+        v-model="batchTag"
+        class="batch-tag-input"
+        placeholder="加标签，逗号分隔"
+        @keyup.enter="batchTags"
+      />
+      <button class="btn small" @click="batchTags">＋标签</button>
+      <button class="btn small danger-soft" @click="batchDelete">🗑 删除所选</button>
+      <button class="btn small" @click="store.clearSelection()">取消选择</button>
     </div>
 
     <!-- 导入弹窗 -->
@@ -165,6 +210,33 @@ const coverOpen = ref(false)
 const coverGameId = ref(null)
 const coverGameTitle = ref('')
 const ctxMenu = reactive({ visible: false, x: 0, y: 0, game: null })
+const selectMode = ref(false)
+const batchTag = ref('')
+
+function toggleSelectMode() {
+  selectMode.value = !selectMode.value
+  if (!selectMode.value) store.clearSelection()
+}
+
+async function batchPlay(state) {
+  const r = await store.batchAction('play_state', state)
+  if (r && !r.ok) alert(r.error || '批量操作失败')
+}
+
+async function batchTags() {
+  const tags = batchTag.value.split(/[,，]/).map((t) => t.trim()).filter(Boolean)
+  if (!tags.length) { alert('请先输入标签'); return }
+  const r = await store.batchAction('tag_add', tags)
+  if (r && r.ok) batchTag.value = ''
+  else alert((r && r.error) || '批量加标签失败')
+}
+
+async function batchDelete() {
+  const n = store.selection.length
+  if (!confirm(`确定从库中删除所选 ${n} 款游戏？仅移出库记录，不会动磁盘文件与存档备份。`)) return
+  const r = await store.batchAction('delete')
+  if (r && !r.ok) alert(r.error || '批量删除失败')
+}
 
 // 右键菜单：点击任意处关闭（含滚动、Esc）
 function openCtx(e, g) {
@@ -211,12 +283,19 @@ async function ctxDelete() {
   await store.removeGame(g.id)
 }
 async function clearSkipped() {
-  const skipped = store.filteredGames.filter((x) => x.status === 3)
+  // 全库的已跳过项（不受当前标签/厂商/年份筛选影响，与确认文案一致）
+  const skipped = store.games.filter((x) => x.status === 3)
   if (!skipped.length) return
   if (!confirm(`确定清空全部 ${skipped.length} 个已跳过项目？仅移出库记录，不会动磁盘文件。`)) return
+  let failed = 0
   for (const g of skipped) {
-    await api.removeGame(g.id)
+    try {
+      await api.removeGame(g.id)
+    } catch (e) {
+      failed += 1  // 单条失败不中断其余删除
+    }
   }
+  if (failed) alert(`${failed} 个条目删除失败，可重试`)
   await Promise.all([store.load(), store.loadPending()])
 }
 function onImported(id) {
@@ -246,6 +325,7 @@ const sortOptions = [
   { id: 'year', label: '发售时间' },
   { id: 'title', label: '标题首字' },
   { id: 'score', label: '评分' },
+  { id: 'user_rating', label: '我的评分' },
   { id: 'playtime', label: '时长' },
   { id: 'favorite', label: '收藏' },
 ]

@@ -241,7 +241,12 @@ def ensure_engine_config(config) -> dict:
     """确保引擎配置目录存在且具备最小配置（备份路径指向 GALA 的备份根）。"""
     root = backup_root(config)
     os.makedirs(ENGINE_CONFIG_DIR, exist_ok=True)
-    os.makedirs(root, exist_ok=True)
+    try:
+        os.makedirs(root, exist_ok=True)
+    except OSError as e:
+        # 备份根可能是未接入的 U盘/移动硬盘：不阻塞引擎配置生成，
+        # 真正备份时由 backup_multi 对每个目标单独探测并报错（v1.1 加固）
+        print(f"[GALA] 备份根暂不可用({e})，跳过预创建")
     cfg_path = os.path.join(ENGINE_CONFIG_DIR, "config.yaml")
     if not os.path.isfile(cfg_path):
         # 引擎会自动生成；先跑一次 config path 触发初始化
@@ -595,29 +600,9 @@ def list_backups(config, games: Optional[list[str]] = None, path: Optional[str] 
 
 
 # ---------- 元数据（GALA 侧记录） ----------
-
-def record_backup_meta(db, game_title: str, engine_name: str, result: dict):
-    """备份后记录元数据：备份时间、引擎名映射、大小。
-
-    result: backup() 返回的引擎 JSON（含 overall 和 games 明细）。
-    """
-    overall = result.get("overall", {})
-    total_bytes = overall.get("totalBytes", 0) or 0
-    now = time.strftime("%Y-%m-%d %H:%M:%S")
-    db.execute(
-        """INSERT OR REPLACE INTO backup_history
-           (game_title, engine_name, last_backup_at, total_bytes, backup_count)
-           VALUES (?, ?, ?, ?,
-                   COALESCE((SELECT backup_count FROM backup_history WHERE game_title=?), 0) + 1)""",
-        (game_title, engine_name, now, total_bytes, game_title),
-    )
-
-
-def get_backup_meta(db) -> list[dict]:
-    rows = db.query(
-        """SELECT game_title, engine_name, last_backup_at, total_bytes, backup_count
-           FROM backup_history ORDER BY last_backup_at DESC""")
-    return rows
+# 注：旧版这里的 record_backup_meta/get_backup_meta 引用了 backup_history
+# 不存在的 game_title 列（一调用必抛 OperationalError 的死代码），v1.1 已删除；
+# 元数据写入统一走 api.py 里带 game_id 的 UPSERT 版本。
 
 
 # ========== GALA 版本快照（关游戏自动备份 / 详情页时间线） ==========
@@ -703,13 +688,16 @@ def _copy_save_tree(src: str, dst: str) -> tuple[int, int]:
     """复制存档目录：跳过垃圾文件 + 单文件超 _MAX_SNAP_FILE_SIZE 的大文件
     （游戏本体/素材，备份它们没有意义还会撑爆磁盘）。
     返回 (总字节, 跳过大文件数)。"""
+    import fnmatch
     total, skipped = 0, 0
     for root, dirs, files in os.walk(src):
         rel = os.path.relpath(root, src)
         target_root = dst if rel == "." else os.path.join(dst, rel)
         os.makedirs(target_root, exist_ok=True)
         for f in files:
-            if f in _SNAP_IGNORE or f.startswith("~$"):
+            lf = f.lower()
+            if f.startswith("~$") or lf == "desktop.ini" or lf == "thumbs.db" or any(
+                    fnmatch.fnmatch(lf, pat) for pat in ("*.tmp", "*.log")):
                 continue
             full = os.path.join(root, f)
             try:
@@ -834,6 +822,14 @@ def snapshot_versions(db, game_id: int) -> list[dict]:
 def snapshot_restore(db, game, ts: str) -> dict:
     """恢复指定版本：先把当前存档自动存为新版本（保险，可反悔），
     再把该版本内容复制回存档源目录。"""
+    # 游戏正在运行时拒绝恢复：rmtree/copytree 会被游戏进程锁住半途失败，
+    # 存档可能处于"删了一半"状态（v1.1 安全防护）
+    try:
+        from . import launcher
+        if game.get("id") in launcher.running_ids():
+            return {"ok": False, "error": "游戏正在运行，请先退出游戏再恢复存档"}
+    except Exception:
+        pass
     src = os.path.join(snapshot_dir(db, game), ts)
     if not os.path.isdir(src):
         return {"ok": False, "error": f"版本不存在: {ts}"}

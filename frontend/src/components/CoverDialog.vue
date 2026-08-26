@@ -105,6 +105,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'done'])
 
 const currentUrl = ref('')
+const origUrl = ref('')        // 裁剪前原图（cover_orig_url），重新裁剪必须画在原图上
 const cands = ref([])
 const urlInput = ref('')
 const busy = ref(false)
@@ -141,6 +142,7 @@ async function loadGame() {
     const g = await api.getGame(props.gameId)
     if (!g) return
     currentUrl.value = g.cover_url || ''
+    origUrl.value = g.cover_orig_url || ''
     hasCrop.value = !!g.cover_orig_url
     cands.value = (g.candidates || [])
       .filter((c) => c.cover_url)
@@ -248,8 +250,10 @@ async function useCand(url) {
 
 // ---- 裁剪 ----
 function enterCrop() {
-  // 编辑用原图（若已裁剪过则用裁剪前原图），保证选框画在完整图上
-  cropSrc.value = currentUrl.value
+  // 编辑用原图（若已裁剪过则用裁剪前原图），保证选框画在完整图上。
+  // 旧版始终用 currentUrl：二次裁剪时比例是相对原图算的，却画在已裁剪的
+  // 小图上 → 裁出的区域整体偏移（v1.1 修）。
+  cropSrc.value = (hasCrop.value && origUrl.value) || currentUrl.value
   cropMode.value = true
   cropReady.value = false
 }

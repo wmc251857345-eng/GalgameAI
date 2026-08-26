@@ -6,6 +6,7 @@ export const useLibraryStore = defineStore('library', {
     games: [],
     summary: { total: 0, pending: 0, confirmed: 0, playtime_hours: 0, makers: 0 },
     loading: false,
+    loadError: null,   // 库加载失败原因（不再静默显示"没有找到游戏"误导用户）
     search: '',
     sort: (() => { try { return localStorage.getItem('gala_sort') || 'company' } catch { return 'company' } })(),
     sortDir: (() => { try { return localStorage.getItem('gala_sortDir') || 'desc' } catch { return 'desc' } })(),
@@ -15,6 +16,9 @@ export const useLibraryStore = defineStore('library', {
     filterYear: '',
     viewMode: 'grid',      // grid | list
     facets: { tags: [], makers: [], years: [] },
+    selection: [],         // 批量操作：选中的 game id 列表（v1.1）
+    wishlist: { items: [], loading: false },
+    update: { info: null, checking: false },   // 更新检查（v1.1）
     missingPaths: [],
     chat: { messages: [], sending: false, contextGame: null, loaded: false },
     currentView: 'library', // library | detail | pending | stats | settings | chat | maker | makers
@@ -45,12 +49,15 @@ export const useLibraryStore = defineStore('library', {
       const q = state.search.trim().toLowerCase()
       let list = state.games
       if (q) {
+        // 全文搜索：标题(中/日/英) + 厂商 + 标签 + 简介 + 个人笔记（v1.1 扩展）
         list = list.filter((g) =>
           (g.title || '').toLowerCase().includes(q) ||
           (g.title_en || '').toLowerCase().includes(q) ||
           (g.title_zh || '').toLowerCase().includes(q) ||
           (g.maker || '').toLowerCase().includes(q) ||
-          (g.tags || []).join(' ').toLowerCase().includes(q),
+          (g.tags || []).join(' ').toLowerCase().includes(q) ||
+          (g.description || '').toLowerCase().includes(q) ||
+          (g.notes || '').toLowerCase().includes(q),
         )
       }
       if (state.filterStatus === 'fav') list = list.filter((g) => g.favorite)
@@ -86,6 +93,7 @@ export const useLibraryStore = defineStore('library', {
         if (sort === 'year') return dir * byYear(a, b)
         if (sort === 'playtime') return dir * ((b.playtime_hours || 0) - (a.playtime_hours || 0) || byTitle(a, b))
         if (sort === 'score') return dir * ((b.score || 0) - (a.score || 0) || byTitle(a, b))
+        if (sort === 'user_rating') return dir * ((b.user_rating || 0) - (a.user_rating || 0) || (b.score || 0) - (a.score || 0) || byTitle(a, b))
         if (sort === 'favorite') return dir * ((b.favorite || 0) - (a.favorite || 0) || byTitle(a, b))
         return dir * byTitle(a, b)  // title = 按标题首字/拼音
       })
@@ -105,6 +113,7 @@ export const useLibraryStore = defineStore('library', {
 
     async load() {
       this.loading = true
+      this.loadError = null
       try {
         const [games, summary, facets, bk] = await Promise.all([
           api.listGames(), api.getLibrarySummary(), api.getLibraryFacets(),
@@ -117,6 +126,9 @@ export const useLibraryStore = defineStore('library', {
         this.games = games
         this.summary = summary
         this.facets = facets
+      } catch (e) {
+        // 失败要明示原因，绝不静默显示"没有找到游戏"误导用户去乱调筛选
+        this.loadError = e.message || '加载失败'
       } finally {
         this.loading = false
       }
@@ -377,15 +389,30 @@ export const useLibraryStore = defineStore('library', {
     },
 
     pollScan() {
-      // 轮询扫描/分析进度，直到结束
+      // 轮询扫描/分析进度，直到结束。
+      // 单次轮询失败不再杀死整条轮询链（旧版一失败 scan.running 永远 true，
+      // 设置页/待确认页的按钮永久禁用，只能重启应用）。
+      let fails = 0
       const tick = async () => {
-        this.scan = await api.getScanProgress()
+        try {
+          this.scan = await api.getScanProgress()
+          fails = 0
+        } catch (e) {
+          fails += 1
+          if (fails >= 5) {  // 连续 5 次（约 4s+超时）都拿不到 → 判定任务失控
+            this.scan = { ...this.scan, running: false, error: '无法获取任务状态' }
+            await Promise.all([this.load(), this.loadPending()])
+            return
+          }
+          setTimeout(tick, 1500)
+          return
+        }
         if (this.scan.running) {
           setTimeout(tick, 800)
         } else {
           if (this.scan.error) alert(`任务出错: ${this.scan.error}`)
           if (this.scan.last_scan) this.lastScan = this.scan.last_scan
-          await Promise.all([this.load(), this.loadPending()])
+          await Promise.all([this.load(), this.loadPending()]).catch(() => {})
         }
       }
       tick()
@@ -564,6 +591,7 @@ export const useLibraryStore = defineStore('library', {
         if (r && r.ok) {
           this.workDetail.work = r.work
           this.workDetailCache[vndbId] = r.work
+          this._trimWorkCache()
           this.workDetail.loading = false
           // 无中文 → 自动触发翻译
           if (!r.work.zh_title && !r.work.zh_summary) {
@@ -589,6 +617,7 @@ export const useLibraryStore = defineStore('library', {
           const merged = { ...(this.workDetail.work || {}), ...r.work, id: vndbId }
           this.workDetail.work = merged
           this.workDetailCache[vndbId] = merged
+          this._trimWorkCache()
           this.workDetail.refreshError = null
           if (!merged.zh_title && !merged.zh_summary) this.triggerTranslate(vndbId)
         } else {
@@ -614,19 +643,22 @@ export const useLibraryStore = defineStore('library', {
       this.workTranslating = true
       const deadline = Date.now() + 180000
       const poll = async () => {
+        let st = null
         try {
-          const st = await api.getWorkTranslateStatus()
-          if (st && st.running && Date.now() < deadline) {
-            setTimeout(poll, 2000)
-            return
-          }
-          this.workTranslating = false
-          // 翻译完成 → 刷新当前档案，中文标题立即上卡片
-          if (this.currentView === 'maker' && this.maker.key) {
-            this.loadMakerProfile(this.maker.key)
-          }
+          st = await api.getWorkTranslateStatus()
         } catch (e) {
-          this.workTranslating = false
+          st = null
+        }
+        if (st && st.running && Date.now() < deadline) {
+          setTimeout(poll, 2000)
+          return
+        }
+        this.workTranslating = false
+        if (!st) return  // 状态拿不到就静默结束，不再无限转
+        // 翻译完成 → 刷新当前档案，中文标题立即上卡片。
+        // 只在厂商模式下刷新：系列模式的 key 是 vndb id，旧版会错当厂商名去加载（v1.1 修）
+        if (this.currentView === 'maker' && this.maker.mode === 'maker' && this.maker.key) {
+          this.loadMakerProfile(this.maker.key)
         }
       }
       setTimeout(poll, 1500)
@@ -636,23 +668,38 @@ export const useLibraryStore = defineStore('library', {
       if (this.workDetail.translating) return
       this.workDetail.translating = true
       this.workDetail.translateError = null
-      await api.translateWorkAsync(vndbId)
+      try {
+        await api.translateWorkAsync(vndbId)
+      } catch (e) {
+        this.workDetail.translating = false
+        this.workDetail.translateError = e.message || '翻译任务启动失败'
+        return
+      }
       const deadline = Date.now() + 120000
       const poll = async () => {
-        const st = await api.getTranslateStatus()
+        let st = null
+        try {
+          st = await api.getTranslateStatus()
+        } catch (e) {
+          st = null   // 瞬时失败不算完成，继续轮询到超时为止（旧版一次失败永久卡"翻译中"）
+        }
         if (st && st.done) {
           this.workDetail.translating = false
           if (st.error) {
             this.workDetail.translateError = st.error
           } else {
-            const r = await api.getWorkDetail(vndbId)
-            if (r && r.ok) this.workDetail.work = r.work
+            try {
+              const r = await api.getWorkDetail(vndbId)
+              if (r && r.ok) this.workDetail.work = r.work
+            } catch (e) { /* 刷新失败保留旧数据 */ }
           }
           return
         }
-        if (Date.now() < deadline) setTimeout(poll, 2000)
+        if (!st && Date.now() < deadline) { setTimeout(poll, 2000); return }
+        if (st && Date.now() < deadline) { setTimeout(poll, 2000); return }
+        this.workDetail.translating = false
+        if (!st) this.workDetail.translateError = '翻译状态获取失败，可稍后重试'
         else {
-          this.workDetail.translating = false
           this.workDetail.translateError = '翻译超时，可稍后重试'
         }
       }
@@ -661,6 +708,14 @@ export const useLibraryStore = defineStore('library', {
 
     closeWorkDetail() {
       this.workDetail = { vndbId: null, work: null, loading: false, error: null, translating: false, translateError: null, refreshError: null }
+    },
+
+    // 作品详情缓存上限：只留最近 60 条（简介全文不小，防长会话内存膨胀）
+    _trimWorkCache() {
+      const keys = Object.keys(this.workDetailCache)
+      while (keys.length > 60) {
+        delete this.workDetailCache[keys.shift()]
+      }
     },
 
     // ---- 关注厂商 / 标签翻译 ----
@@ -690,7 +745,13 @@ export const useLibraryStore = defineStore('library', {
 
     // 标签翻译完成后刷新中文标签显示
     async pollTagTranslate() {
-      const st = await api.getTagTranslateStatus()
+      let st = null
+      try {
+        st = await api.getTagTranslateStatus()
+      } catch (e) {
+        this.tagTranslating = false  // 一次失败不卡死"翻译中"徽章（旧版会永久 true）
+        return
+      }
       this.tagTranslating = !!st.running
       if (st.running) {
         setTimeout(() => this.pollTagTranslate(), 2500)
@@ -703,11 +764,88 @@ export const useLibraryStore = defineStore('library', {
     },
 
     async pollWorkTranslate() {
-      const st = await api.getWorkTranslateStatus()
+      let st = null
+      try {
+        st = await api.getWorkTranslateStatus()
+      } catch (e) {
+        this.workTranslating = false
+        return
+      }
       this.workTranslating = !!st.running
       if (st.running) {
         setTimeout(() => this.pollWorkTranslate(), 2500)
       }
+    },
+
+    // ---- 批量操作（v1.1） ----
+    toggleSelect(id) {
+      const i = this.selection.indexOf(id)
+      if (i >= 0) this.selection.splice(i, 1)
+      else this.selection.push(id)
+    },
+
+    selectAll() {
+      this.selection = this.filteredGames.map((g) => g.id)
+    },
+
+    clearSelection() {
+      this.selection = []
+    },
+
+    async batchAction(action, value = null) {
+      const ids = [...this.selection]
+      if (!ids.length) return { ok: false, error: '未选择游戏' }
+      const r = await api.batchUpdate(ids, action, value)
+      if (r && r.ok) {
+        this.clearSelection()
+        await Promise.all([this.load(), this.loadPending()].map((p) => p.catch(() => {})))
+      }
+      return r
+    },
+
+    // ---- 想玩清单（v1.1） ----
+    async loadWishlist() {
+      this.wishlist.loading = true
+      try {
+        const r = await api.wishlistList()
+        this.wishlist.items = (r && r.ok) ? (r.items || []) : []
+      } catch (e) {
+        this.wishlist.items = []
+      } finally {
+        this.wishlist.loading = false
+      }
+    },
+
+    async wishlistAdd(title, note = '', vndbId = '') {
+      return api.wishlistAdd(title, note, vndbId)
+    },
+
+    async wishlistRemove(id) {
+      await api.wishlistRemove(id)
+      this.wishlist.items = this.wishlist.items.filter((x) => x.id !== id)
+    },
+
+    async wishlistUpdate(id, fields) {
+      const r = await api.wishlistUpdate(id, fields)
+      if (r && r.ok) {
+        const it = this.wishlist.items.find((x) => x.id === id)
+        if (it) Object.assign(it, fields)
+      }
+      return r
+    },
+
+    // ---- 更新检查（v1.1） ----
+    async checkUpdate(force = false) {
+      if (this.update.checking) return null
+      this.update.checking = true
+      try {
+        this.update.info = await api.checkUpdate(force)
+      } catch (e) {
+        this.update.info = { ok: false, error: e.message || '检查失败', current: '', latest: null, has_update: false, url: '' }
+      } finally {
+        this.update.checking = false
+      }
+      return this.update.info
     },
   },
 })

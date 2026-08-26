@@ -51,7 +51,7 @@
             <tr><td>发售</td><td>{{ g.released || '—' }}</td></tr>
             <tr><td>评分</td><td>{{ g.rating_disp != null ? '★ ' + g.rating_disp : '—' }}</td></tr>
             <tr><td>时长</td><td>{{ lengthText }}</td></tr>
-            <tr><td>游玩</td><td>{{ g.playtime_hours }}h<template v-if="g.last_played"> · 最近 {{ g.last_played }}</template></td></tr>
+            <tr><td>游玩</td><td>{{ g.playtime_hours ?? 0 }}h<template v-if="g.last_played"> · 最近 {{ g.last_played }}</template></td></tr>
             <tr><td>体积</td><td>{{ sizeText }}</td></tr>
             <tr><td>本地路径</td><td class="path-cell">{{ g.path }}</td></tr>
             <tr v-if="g.exe_path"><td>启动 exe</td><td class="path-cell">{{ g.exe_path }}</td></tr>
@@ -72,7 +72,14 @@
             <tr><td>工作目录</td><td><input v-model="form.workdir" placeholder="可选，默认 exe 所在目录" /></td></tr>
             <tr><td>启动参数</td><td><input v-model="form.launch_args" placeholder="可选" /></td></tr>
             <tr><td>汉化</td><td><input v-model="form.hanhua" type="checkbox" style="width:auto;height:auto;accent-color:var(--accent)" /></td></tr>
+            <tr><td>我的评分</td><td>
+              <select v-model.number="form.user_rating" style="width:auto">
+                <option :value="0">未评</option>
+                <option v-for="n in 5" :key="n" :value="n">{{ '★'.repeat(n) }} ({{ n }})</option>
+              </select>
+            </td></tr>
             <tr><td>简介</td><td><textarea v-model="form.description" rows="4" placeholder="中文简介"></textarea></td></tr>
+            <tr><td>我的笔记</td><td><textarea v-model="form.notes" rows="3" placeholder="私人记录：攻略进度、攻略组、汉化组、感想……"></textarea></td></tr>
           </table>
 
           <div class="hero-actions">
@@ -89,16 +96,23 @@
                 <option :value="1">🎮 进行中</option>
                 <option :value="2">🏆 已通关</option>
               </select>
+              <!-- 我的评分（v1.1）：点星星打分，再点同一颗清除 -->
+              <span v-if="!editing" class="rate-stars" title="我的评分">
+                <button
+                  v-for="n in 5"
+                  :key="n"
+                  class="star-btn"
+                  :class="{ on: n <= (g.user_rating || 0) }"
+                  @click="rate(n)"
+                >★</button>
+                <em v-if="g.user_rating" class="rate-num">{{ g.user_rating }}/5</em>
+              </span>
               <button class="btn" :disabled="reanalyzing" @click="reanalyze">
                 {{ reanalyzing ? '⟳ 分析中…' : '⟳ 重新 AI 分析' }}
               </button>
               <button class="btn" @click="askButler">💬 问管家</button>
               <button v-if="g.vndb_id" class="btn" @click="store.openSeries(g.vndb_id)">🧩 系列/前作</button>
               <button class="btn" @click="startEdit">✏ 编辑</button>
-              <label class="le-toggle">
-                <input :checked="!!g.use_locale_emu" type="checkbox" @change="toggleLe" />
-                Locale Emulator
-              </label>
             </template>
             <!-- 编辑模式 -->
             <template v-else>
@@ -169,6 +183,12 @@
           <summary>本地文件信息（readme 等）</summary>
           <pre class="text-sample">{{ g.text_sample }}</pre>
         </details>
+      </div>
+
+      <!-- 我的笔记（v1.1） -->
+      <div v-if="g.notes && !editing" class="detail-section">
+        <h2>我的笔记</h2>
+        <p class="desc notes">{{ g.notes }}</p>
       </div>
 
       <!-- 存档备份 -->
@@ -319,6 +339,8 @@ function startEdit() {
     rating: d.rating_disp, length_minutes: d.length_minutes, description: d.description || '',
     exe_path: d.exe_path || '', workdir: d.workdir || '', launch_args: d.launch_args || '',
     hanhua: !!d.hanhua,
+    user_rating: d.user_rating || 0,
+    notes: d.notes || '',
   })
   editTags.value = [...(d.tags || [])]
   editing.value = true
@@ -404,6 +426,16 @@ async function setPlayState(e) {
   store.load()
 }
 
+// 我的评分：再点当前评分同一颗星 = 清除
+async function rate(n) {
+  const cur = g.value.user_rating || 0
+  const next = cur === n ? 0 : n
+  const r = await api.updateGame(g.value.id, { user_rating: next })
+  if (r && !r.ok) { alert(r.error); return }
+  g.value.user_rating = next
+  store.load()
+}
+
 function askButler() {
   store.setChatContext(g.value)
   store.currentView = 'chat'
@@ -437,11 +469,14 @@ async function reanalyze() {
 
 function pollJob() {
   clearTimeout(jobTimer)
+  let fails = 0
   jobTimer = setTimeout(async () => {
     let st = null
     try {
       st = await api.getJobStatus()
     } catch (e) {
+      fails += 1
+      if (fails < 4) { jobTimer = setTimeout(pollJob, 1500); return } // 瞬时失败重试，别急着宣布完成
       st = null
     }
     if (st && st.running) {
@@ -464,9 +499,6 @@ async function skip() {
   await api.markUnmatched(g.value.id)
   store.back()
   store.load()
-}
-async function toggleLe(e) {
-  await api.setLocaleEmu(g.value.id, e.target.checked)
 }
 
 // ---- 存档备份 ----
@@ -536,18 +568,26 @@ async function doSnapshot() {
   bkBusy.value = true
   try {
     const r = await api.backupSnapshotGame(g.value.id)
-    if (!r.ok) { alert(r.error || '备份失败'); return }
+    if (!r || !r.ok) { alert(r?.error || '备份失败'); return }
     alert(`✓ 快照已保存（${fmtSize(r.bytes || 0)}）`)
     await loadBackupState()
     store.load()
+  } catch (e) {
+    alert(e.message || '备份失败（超时或异常）')
   } finally {
     bkBusy.value = false
   }
 }
 
 async function doImport() {
-  const r = await api.backupSnapshotImport(g.value.id)
-  if (!r.ok) { alert(r.error || '导入失败'); return }
+  let r = null
+  try {
+    r = await api.backupSnapshotImport(g.value.id)
+  } catch (e) {
+    alert(e.message || '导入失败（超时或异常）')
+    return
+  }
+  if (!r || !r.ok) { alert(r?.error || '导入失败'); return }
   alert(`✓ 存档已导入 → ${r.target}`)
   await loadBackupState()
 }
@@ -557,9 +597,11 @@ async function doRestoreSnap(ts) {
   bkBusy.value = true
   try {
     const r = await api.backupSnapshotRestore(g.value.id, ts)
-    if (!r.ok) { alert(r.error || '恢复失败'); return }
-    alert(`✓ 已恢复 ${r.ts} 版本（${r.restored.length} 个存档目录）`)
+    if (!r || !r.ok) { alert(r?.error || '恢复失败'); return }
+    alert(`✓ 已恢复 ${r.ts} 版本（${(r.restored || []).length} 个存档目录）`)
     await loadBackupState()
+  } catch (e) {
+    alert(e.message || '恢复失败（超时或异常）')
   } finally {
     bkBusy.value = false
   }

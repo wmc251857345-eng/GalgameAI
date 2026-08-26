@@ -34,6 +34,7 @@ const state = computed(() => {
 const timeText = computed(() => {
   if (!props.meta || !props.meta.last_backup_at) return ''
   const t = new Date(props.meta.last_backup_at.replace(' ', 'T'))
+  if (isNaN(t.getTime())) return '' // 非法时间不渲染（防 "Invalid Date"）
   const diff = Date.now() - t.getTime()
   const days = Math.floor(diff / 86400000)
   if (days <= 0) return '今天'

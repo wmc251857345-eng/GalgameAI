@@ -320,7 +320,7 @@ function familyRels(w) {
 
 function openWork(w) {
   if (w.local_id) {
-    store.openGame(w.local_id)
+    store.openDetail(w.local_id)  // 旧版 openGame 不存在，点击已拥有的作品必报错（v1.1 修）
   } else if (w.id) {
     // 传入卡片已有数据 → 弹层秒开，后台再拉全量详情合并（防“点开没图片的作品卡死”）
     store.openWorkDetail(w.id, w)
@@ -390,12 +390,28 @@ function retry() {
 
 onMounted(() => {
   store.loadFollows()
-  // 触发未翻译标签的批量翻译
-  const tags = new Set()
-  for (const w of profile.value?.works || []) {
-    for (const t of w.tags || []) tags.add(t)
+  // 触发未翻译标签的批量翻译。
+  // 首次打开时 profile 还在异步加载（works 为空），旧版在这里收集不到标签，
+  // 导致"第一次进厂商页标签不翻译、重进才翻"——改为 profile 到位后再收集一次。
+  const collect = () => {
+    const tags = new Set()
+    for (const w of profile.value?.works || []) {
+      for (const t of w.tags || []) tags.add(t)
+    }
+    if (tags.size) store.ensureTagTranslate([...tags])
+    return tags.size > 0
   }
-  if (tags.size) store.ensureTagTranslate([...tags])
+  if (!collect()) {
+    const stop = watch(
+      () => profile.value?.works,
+      (works) => {
+        if (works && works.length) {
+          collect()
+          stop()
+        }
+      },
+    )
+  }
 })
 
 // 标签/标题翻译完成 → 刷新档案一次（后端 gave_up 机制已根治循环；这里仅刷新单次）

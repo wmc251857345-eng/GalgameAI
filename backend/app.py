@@ -80,6 +80,11 @@ def _startup_tasks(cfg, db):
     except Exception as e:
         logging.error("自动备份失败: %s", e)
         print(f"[GALA] 自动备份失败: {e}")
+    try:
+        from .api import JsApi as _Js
+        _Js(db, cfg).check_update()  # 静默更新检查（24h 缓存，失败不影响使用）
+    except Exception as e:
+        logging.warning("更新检查失败: %s", e)
 
 def _start_tray(window):
     """系统托盘：显示/隐藏 + 退出。关窗默认最小化到托盘（closing 事件返回 False 取消关闭）。

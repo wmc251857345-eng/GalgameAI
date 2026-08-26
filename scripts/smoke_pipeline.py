@@ -12,8 +12,9 @@ import sqlite3
 import sys
 import tempfile
 
-sys.path.insert(0, r"G:\GalgameAI")
-os.chdir(r"G:\GalgameAI")
+PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, PROJ)
+os.chdir(PROJ)
 
 from backend import organizer
 from backend.config import Config
@@ -31,54 +32,63 @@ def check(name, cond, detail=""):
 # ---------- 1) 整理计划 (只读 dry-run, 真实目录) ----------
 print("\n=== 1. build_plan dry-run (真实目录只读) ===")
 cfg = Config()
-cfg.set("library_roots", [r"D:\Games_HDD\GalGame"])
+REAL_ROOT = r"D:\Games_HDD\GalGame"
 sandbox_db = os.path.join(tempfile.mkdtemp(prefix="gala_smoke_"), "sandbox.db")
-shutil.copy2(r"G:\GalgameAI\database\library.db", sandbox_db)
+shutil.copy2(os.path.join(PROJ, "database", "library.db"), sandbox_db)
 db = Database(sandbox_db)
 db.init()
 
-plan = organizer.build_plan(cfg, db)
-items = plan["items"]
-print(f"计划项数: {plan.get('total')}")
-for it in items:
-    print(f"  [{it['maker'] or '?'}] {it['title']:<28} {it['reason']:<12} {it['from']}  →  {it['to']}")
+if os.path.isdir(REAL_ROOT) and os.path.isdir(
+        os.path.join(REAL_ROOT, "SummerClover")):
+    # 仅在原始开发机数据集上运行数据绑定断言（预期移动项与那台机器的库一一对应）
+    cfg.set("library_roots", [REAL_ROOT])
+    plan = organizer.build_plan(cfg, db)
+    items = plan["items"]
+    print(f"计划项数: {plan.get('total')}")
+    for it in items:
+        print(f"  [{it['maker'] or '?'}] {it['title']:<28} {it['reason']:<12} {it['from']}  →  {it['to']}")
 
-by_from = {it["from"]: it for it in items}
-# 预期移动（归桶 + 平铺 + 拆解）
-exp = [
-    (r"D:\Games_HDD\GalGame\SummerClover", "Connection"),
-    (r"D:\Games_HDD\GalGame\与恶魔三姐妹的认真对决", "Whisp"),
-    (r"D:\Games_HDD\GalGame\【PC】Love×Holic魅惑少女与白液之奏", "Atelier_Kaguya"),
-    (r"D:\Games_HDD\GalGame\【PC】Hakoniwa\Hakoniwa -ハコニワ-", "Atelier_Kaguya"),
-    (r"D:\Games_HDD\GalGame\【PC】Pure×Holic纯洁少女与婚姻关系\Pure×Holic ～純潔乙女と婚姻カンケイ！？～", "Atelier_Kaguya"),
-    (r"D:\Games_HDD\GalGame\おっぱいスパイ学園\おっぱいスパイ学園", "Uncategorized"),
-    (r"D:\Games_HDD\GalGame\Independent_RPG_SLG\后宫绮梦\后宫绮梦", "后宫绮梦"),       # 平铺
-    (r"D:\Games_HDD\GalGame\Independent_RPG_SLG\风流公子\1", "风流公子"),           # 平铺
-    (r"D:\Games_HDD\GalGame\Uncategorized\Arisa\1", "Arisa"),                     # 平铺
-]
-for from_path, expect_segment in exp:
-    it = by_from.get(from_path)
-    check(f"计划含: {os.path.basename(from_path)}", it is not None)
-    if it:
-        check(f"  → 目标含 {expect_segment}", expect_segment in it["to"], it["to"])
+    by_from = {it["from"]: it for it in items}
+    exp = [
+        (r"D:\Games_HDD\GalGame\SummerClover", "Connection"),
+        (r"D:\Games_HDD\GalGame\与恶魔三姐妹的认真对决", "Whisp"),
+        (r"D:\Games_HDD\GalGame\【PC】Love×Holic魅惑少女与白液之奏", "Atelier_Kaguya"),
+        (r"D:\Games_HDD\GalGame\【PC】Hakoniwa\Hakoniwa -ハコニワ-", "Atelier_Kaguya"),
+        (r"D:\Games_HDD\GalGame\【PC】Pure×Holic纯洁少女与婚姻关系\Pure×Holic ～純潔乙女と婚姻カンケイ！？～", "Atelier_Kaguya"),
+        (r"D:\Games_HDD\GalGame\おっぱいスパイ学園\おっぱいスパイ学園", "Uncategorized"),
+        (r"D:\Games_HDD\GalGame\Independent_RPG_SLG\后宫绮梦\后宫绮梦", "后宫绮梦"),       # 平铺
+        (r"D:\Games_HDD\GalGame\Independent_RPG_SLG\风流公子\1", "风流公子"),           # 平铺
+        (r"D:\Games_HDD\GalGame\Uncategorized\Arisa\1", "Arisa"),                     # 平铺
+    ]
+    for from_path, expect_segment in exp:
+        it = by_from.get(from_path)
+        check(f"计划含: {os.path.basename(from_path)}", it is not None)
+        if it:
+            check(f"  → 目标含 {expect_segment}", expect_segment in it["to"], it["to"])
 
-# 有意义的双层结构保留不动（桶内包装层，内外层都有效）
-for keep in [r"\Liquid\Enjou_Gakuen_2\艶嬢", r"\Uncategorized\Oppai_Bunny_Gakuen\もっと",
-             r"\Uncategorized\Yukan_Fujin_Club\有閑"]:
-    check(f"有意义双层保留: {os.path.basename(keep.rstrip(chr(92)))}",
-          not any(keep in it["from"] for it in items))
+    # 有意义的双层结构保留不动（桶内包装层，内外层都有效）
+    for keep in [r"\Liquid\Enjou_Gakuen_2\艶嬢", r"\Uncategorized\Oppai_Bunny_Gakuen\もっと",
+                 r"\Uncategorized\Yukan_Fujin_Club\有閑"]:
+        check(f"有意义双层保留: {os.path.basename(keep.rstrip(chr(92)))}",
+              not any(keep in it["from"] for it in items))
 
-# 直接挂在桶下的游戏绝不能被提议移动
-buckets_now = organizer._detect_buckets(db, r"D:\Games_HDD\GalGame")
-for g in db.query("SELECT path FROM games WHERE status=2"):
-    p = g["path"] or ""
-    parent = os.path.basename(os.path.dirname(p.rstrip("\\/")))
-    if parent.lower() in buckets_now:
-        check(f"已入桶不动: {os.path.basename(p)}", p not in by_from, p)
+    # 直接挂在桶下的游戏绝不能被提议移动
+    buckets_now = organizer._detect_buckets(db, REAL_ROOT)
+    for g in db.query("SELECT path FROM games WHERE status=2"):
+        p = g["path"] or ""
+        parent = os.path.basename(os.path.dirname(p.rstrip("\\/")))
+        if parent.lower() in buckets_now:
+            check(f"已入桶不动: {os.path.basename(p)}", p not in by_from, p)
 
-# status=0 的不进计划
-check("status=0 游戏不进计划",
-      not any("和龙女妈妈" in it["from"] for it in items))
+    # status=0 的不进计划
+    check("status=0 游戏不进计划",
+          not any("和龙女妈妈" in it["from"] for it in items))
+else:
+    print(f"SKIP: 第 1 节断言绑定原开发机数据集（{REAL_ROOT}\\SummerClover 不存在），"
+          "本机只验证 build_plan 可运行")
+    cfg.set("library_roots", [REAL_ROOT] if os.path.isdir(REAL_ROOT) else [])
+    plan = organizer.build_plan(cfg, db)
+    check("build_plan 可运行（任意数据集）", isinstance(plan.get("items"), list))
 
 # ---------- 2) apply_plan 沙箱执行 (临时目录) ----------
 print("\n=== 2. apply_plan 真实移动 (沙箱临时目录) ===")

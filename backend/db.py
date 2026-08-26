@@ -1,12 +1,13 @@
-"""SQLite 数据库：schema v2、线程安全、行字典返回。
-开发阶段：版本不一致时直接重建（正式版需迁移框架）。"""
+"""SQLite 数据库：线程安全、行字典返回。
+升级策略：只做无损迁移（CREATE IF NOT EXISTS + ALTER ADD COLUMN），
+任何情况下都不 DROP 重建用户库（v1.1 起正式版铁律）。"""
 import os
 import sqlite3
 import threading
 
 from . import paths
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS games (
@@ -23,7 +24,9 @@ CREATE TABLE IF NOT EXISTS games (
     hanhua INTEGER DEFAULT 0, text_sample TEXT, size_bytes INTEGER DEFAULT 0,
     playtime_seconds INTEGER DEFAULT 0, last_played TEXT, added_at TEXT,
     status INTEGER DEFAULT 0,            -- 0扫描到 1待确认 2已入库 3手动/跳过
-    match_confidence REAL, source TEXT   -- vndb|bgm|ai|manual
+    match_confidence REAL, source TEXT,  -- vndb|bgm|ai|manual
+    user_rating INTEGER DEFAULT 0,       -- 用户评分 0(未评)~5 星（v1.1）
+    notes TEXT                           -- 个人笔记（v1.1）
 );
 CREATE INDEX IF NOT EXISTS idx_games_path ON games(path);
 CREATE INDEX IF NOT EXISTS idx_games_status ON games(status);
@@ -108,6 +111,15 @@ CREATE TABLE IF NOT EXISTS maker_follows (
     created_at TEXT
 );
 
+-- 想玩清单（v1.1）：还没入库/还没买，想玩的记录
+CREATE TABLE IF NOT EXISTS wishlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    note TEXT,
+    vndb_id TEXT,
+    created_at TEXT
+);
+
 -- 存档备份：每款游戏的引擎映射 + 备份元数据
 CREATE TABLE IF NOT EXISTS backup_history (
     game_id INTEGER PRIMARY KEY,     -- → games.id
@@ -168,9 +180,10 @@ class Database:
             conn = self.connect()
             v = conn.execute("PRAGMA user_version").fetchone()[0]
             if v != SCHEMA_VERSION:
-                # 防数据毁灭（历史教训）：DROP 重建前必须先把旧库完整备份。
-                # 备份用 sqlite3 在线备份 API（一致快照，无需关闭连接）；
-                # 备份失败则中止重建 —— 宁可带着旧 schema 启动，也不冒险丢唯一副本。
+                # 防数据毁灭（历史教训）：版本变化前先把旧库完整备份。
+                # 备份用 sqlite3 在线备份 API（一致快照，无需关闭连接）。
+                # v1.1 起不再 DROP 重建 —— 全部走无损迁移（CREATE IF NOT EXISTS +
+                # ALTER ADD COLUMN），旧库数据原样保留，备份只是双保险。
                 import time as _t
                 bak_dir = os.path.join(os.path.dirname(self.path), "backup")
                 try:
@@ -184,19 +197,13 @@ class Database:
                             conn.backup(dest)
                     finally:
                         dest.close()
-                    print(f"[GALA] 旧库已备份: {bak}")
+                    print(f"[GALA] 升级前旧库已备份: {bak}")
                 except Exception as e:
-                    print(f"[GALA] 旧库备份失败({e})，取消重建，保留现有数据")
-                    return
-                tables = [r["name"] for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
-                for t in tables:
-                    conn.execute(f'DROP TABLE IF EXISTS "{t}"')
-                conn.execute("PRAGMA user_version = 0")
-                conn.commit()
+                    # 备份失败也不再中止：无损迁移本身不动已有表/列，风险可控
+                    print(f"[GALA] 旧库备份失败({e})，继续无损迁移")
             conn.executescript(_SCHEMA)
-            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._migrate(conn)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()
 
     @staticmethod
@@ -227,6 +234,12 @@ class Database:
         if "play_state" not in cols:
             # 游玩进度：0 未开始 / 1 进行中 / 2 已通关（Galgame 库核心管理维度）
             conn.execute("ALTER TABLE games ADD COLUMN play_state INTEGER DEFAULT 0")
+        if "user_rating" not in cols:
+            # 用户评分：0(未评)~5 星，区别于 VNDB 外部评分 rating（v1.1）
+            conn.execute("ALTER TABLE games ADD COLUMN user_rating INTEGER DEFAULT 0")
+        if "notes" not in cols:
+            # 个人笔记（v1.1）：自由文本，参与搜索
+            conn.execute("ALTER TABLE games ADD COLUMN notes TEXT")
 
     def query(self, sql, params=()):
         with self._lock:

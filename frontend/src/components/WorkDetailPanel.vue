@@ -46,10 +46,12 @@
 
             <div class="wd-actions">
               <button v-if="w.local_id" class="btn primary" @click="openLocal">🎮 打开本地游戏</button>
+              <button class="btn" @click="addWishlist">🎯 加入想玩</button>
               <button v-if="w.vndb_id_series !== undefined" class="btn" @click="openSeries">🧩 系列/前作</button>
               <button v-if="store.workDetail.translating" class="btn" disabled>⏳ 翻译中…</button>
               <button v-else-if="store.workDetail.translateError" class="btn" @click="store.triggerTranslate(w.id)">🔄 重新翻译</button>
             </div>
+            <p v-if="wishMsg" class="wd-wish-msg">{{ wishMsg }}</p>
             <p v-if="store.workDetail.translateError" class="wd-err">{{ store.workDetail.translateError }}</p>
           </div>
         </div>
@@ -92,7 +94,21 @@ const zhSummary = computed(() => {
 
 function openLocal() {
   store.closeWorkDetail()
-  store.openGame(w.value.local_id)
+  store.openDetail(w.value.local_id)  // 旧版 openGame 不存在，点击必报错（v1.1 修）
+}
+
+// 加入想玩清单（v1.1）：作品名 + vndb id 一键记录
+const wishMsg = ref('')
+async function addWishlist() {
+  if (!w.value) return
+  try {
+    const r = await store.wishlistAdd(displayTitle.value || w.value.title || '', '', w.value.id || '')
+    wishMsg.value = r && r.ok ? '✓ 已加入想玩清单' : (r && r.error) || '加入失败'
+    if (r && r.ok) store.loadWishlist()
+  } catch (e) {
+    wishMsg.value = e.message || '加入失败'
+  }
+  setTimeout(() => { wishMsg.value = '' }, 4000)
 }
 
 function openSeries() {

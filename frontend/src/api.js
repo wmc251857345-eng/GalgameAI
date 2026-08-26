@@ -80,9 +80,9 @@ export const api = {
   async ping() { return hasBridge() ? window.pywebview.api.ping() : 'mock-pong' },
 
   async getAppInfo() {
-    if (hasBridge()) return window.pywebview.api.get_app_info()
-    return { name: 'GALA', version: '0.3.0', python: '3.11.9', platform: 'browser-mock', db_path: '(mock)', base_url: '',
-            build: { version: '0.3.0', build_date: '', git: '' } }
+    if (hasBridge()) return withTimeout(window.pywebview.api.get_app_info(), 10000, '应用信息')
+    return { name: 'GALA', version: '1.1.0', python: '3.11.9', platform: 'browser-mock', db_path: '(mock)', base_url: '',
+            build: { version: '1.1.0', build_date: '', git: '' } }
   },
 
   // 首次启动引导（feat-2）
@@ -99,7 +99,7 @@ export const api = {
 
   // 配置
   async getConfig() {
-    if (hasBridge()) return window.pywebview.api.get_config()
+    if (hasBridge()) return withTimeout(window.pywebview.api.get_config(), 10000, '配置')
     await delay()
     return JSON.parse(JSON.stringify(MOCK_CONFIG))
   },
@@ -116,7 +116,7 @@ export const api = {
 
   // 库
   async getLibrarySummary() {
-    if (hasBridge()) return window.pywebview.api.get_library_summary()
+    if (hasBridge()) return withTimeout(window.pywebview.api.get_library_summary(), 20000, '库统计')
     await delay()
     return {
       total: MOCK_GAMES.length,
@@ -124,6 +124,8 @@ export const api = {
       confirmed: MOCK_GAMES.filter((g) => g.status === 2).length,
       playtime_hours: Math.round(MOCK_GAMES.reduce((s, g) => s + g.playtime_hours, 0) * 10) / 10,
       makers: new Set(MOCK_GAMES.map((g) => g.maker)).size,
+      playing: 1,
+      beaten: 2,
     }
   },
 
@@ -141,7 +143,7 @@ export const api = {
   },
 
   async listGames() {
-    if (hasBridge()) return window.pywebview.api.list_games(1000, 0, 'title', '')
+    if (hasBridge()) return withTimeout(window.pywebview.api.list_games(1000, 0, 'title', ''), 30000, '游戏列表')
     await delay(300)
     return MOCK_GAMES
   },
@@ -156,7 +158,7 @@ export const api = {
   },
 
   async getPending() {
-    if (hasBridge()) return window.pywebview.api.get_pending()
+    if (hasBridge()) return withTimeout(window.pywebview.api.get_pending(), 30000, '待确认列表')
     await delay()
     return MOCK_PENDING
   },
@@ -173,7 +175,7 @@ export const api = {
   },
 
   async getScanProgress() {
-    if (hasBridge()) return window.pywebview.api.get_scan_progress()
+    if (hasBridge()) return withTimeout(window.pywebview.api.get_scan_progress(), 5000, '扫描进度')
     return { running: false, stage: 'idle', total: 0, done: 0, current: '', error: null, log: [] }
   },
 
@@ -218,7 +220,7 @@ export const api = {
   },
 
   async getJobStatus() {
-    if (hasBridge()) return window.pywebview.api.get_job_status()
+    if (hasBridge()) return withTimeout(window.pywebview.api.get_job_status(), 10000, '任务状态')
     await delay()
     return { running: false, game_id: null, stage: 'idle', result: null, error: null }
   },
@@ -247,35 +249,30 @@ export const api = {
 
   // 启动
   async launchGame(id) {
-    if (hasBridge()) return window.pywebview.api.launch_game(id)
+    if (hasBridge()) return withTimeout(window.pywebview.api.launch_game(id), 30000, '启动游戏')
     await delay()
     return { ok: true, pid: 12345 }
   },
 
   async stopGame(id) {
-    if (hasBridge()) return window.pywebview.api.stop_game(id)
+    if (hasBridge()) return withTimeout(window.pywebview.api.stop_game(id), 15000, '停止游戏')
     return { ok: true }
   },
 
   async getRunning() {
-    if (hasBridge()) return window.pywebview.api.get_running()
+    if (hasBridge()) return withTimeout(window.pywebview.api.get_running(), 10000, '运行状态')
     return {}
-  },
-
-  async setLocaleEmu(id, enabled) {
-    if (hasBridge()) return window.pywebview.api.set_locale_emu(id, enabled)
-    return { ok: true }
   },
 
   // 手动编辑
   async updateGame(id, fields) {
-    if (hasBridge()) return window.pywebview.api.update_game(id, fields)
+    if (hasBridge()) return withTimeout(window.pywebview.api.update_game(id, fields), 30000, '保存资料')
     await delay()
     return { ok: true }
   },
 
   async updateTags(id, tags) {
-    if (hasBridge()) return window.pywebview.api.update_tags(id, tags)
+    if (hasBridge()) return withTimeout(window.pywebview.api.update_tags(id, tags), 30000, '保存标签')
     await delay()
     return { ok: true, tags }
   },
@@ -392,27 +389,27 @@ export const api = {
   },
 
   async exportGames() {
-    if (hasBridge()) return window.pywebview.api.export_games()
+    if (hasBridge()) return withTimeout(window.pywebview.api.export_games(), 60000, '导出库')
     await delay()
     return { ok: true, path: '(mock)' }
   },
 
   async backupDb() {
-    if (hasBridge()) return window.pywebview.api.backup_db()
+    if (hasBridge()) return withTimeout(window.pywebview.api.backup_db(), 120000, '数据库备份')
     await delay()
     return { ok: true, path: '(mock)' }
   },
 
   // 收藏 / 筛选维度 / 维护
   async toggleFavorite(id) {
-    if (hasBridge()) return window.pywebview.api.toggle_favorite(id)
+    if (hasBridge()) return withTimeout(window.pywebview.api.toggle_favorite(id), 15000, '收藏')
     await delay()
     return { ok: true, favorite: true }
   },
 
   // 游玩进度：0未开始 / 1进行中 / 2已通关
   async setPlayState(id, state) {
-    if (hasBridge()) return window.pywebview.api.set_play_state(id, state)
+    if (hasBridge()) return withTimeout(window.pywebview.api.set_play_state(id, state), 15000, '游玩进度')
     await delay()
     return { ok: true, play_state: state }
   },
@@ -436,19 +433,19 @@ export const api = {
   },
 
   async getMissingPaths() {
-    if (hasBridge()) return window.pywebview.api.get_missing_paths()
+    if (hasBridge()) return withTimeout(window.pywebview.api.get_missing_paths(), 60000, '失效路径检查')
     await delay()
     return []
   },
 
   async relocateGame(id) {
-    if (hasBridge()) return window.pywebview.api.relocate_game(id)
+    if (hasBridge()) return withTimeout(window.pywebview.api.relocate_game(id), 30000, '重新定位')
     await delay()
     return { ok: true }
   },
 
   async cancelTask() {
-    if (hasBridge()) return window.pywebview.api.cancel_task()
+    if (hasBridge()) return withTimeout(window.pywebview.api.cancel_task(), 10000, '取消任务')
     return { ok: true }
   },
 
@@ -475,13 +472,13 @@ export const api = {
   },
 
   async chatHistory() {
-    if (hasBridge()) return window.pywebview.api.chat_history()
+    if (hasBridge()) return withTimeout(window.pywebview.api.chat_history(), 15000, '聊天记录')
     await delay()
     return []
   },
 
   async chatClear() {
-    if (hasBridge()) return window.pywebview.api.chat_clear()
+    if (hasBridge()) return withTimeout(window.pywebview.api.chat_clear(), 15000, '清空聊天')
     return { ok: true }
   },
 
@@ -515,7 +512,7 @@ export const api = {
   },
 
   async getNewReleases() {
-    if (hasBridge()) return window.pywebview.api.get_new_releases()
+    if (hasBridge()) return withTimeout(window.pywebview.api.get_new_releases(), 10000, '新作进度')
     await delay()
     return { ok: true, state: { running: false }, releases: [] }
   },
@@ -597,75 +594,142 @@ export const api = {
   },
 
   async listFollows() {
-    if (hasBridge()) return window.pywebview.api.list_follows()
+    if (hasBridge()) return withTimeout(window.pywebview.api.list_follows(), 10000, '关注列表')
     await delay()
     return { ok: true, follows: [] }
   },
 
+  // ---------- 批量操作 (v1.1) ----------
+  async batchUpdate(gameIds, action, value = null) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.batch_update(gameIds, action, value), 60000, '批量操作')
+    }
+    await delay(300)
+    return { ok: true, action, updated: gameIds.length, errors: [] }
+  },
+
+  // ---------- 想玩清单 (v1.1) ----------
+  async wishlistList() {
+    if (hasBridge()) return withTimeout(window.pywebview.api.wishlist_list(), 15000, '想玩清单')
+    await delay()
+    return { ok: true, items: [] }
+  },
+
+  async wishlistAdd(title, note = '', vndbId = '') {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.wishlist_add(title, note, vndbId), 15000, '加入想玩')
+    }
+    await delay()
+    return { ok: true, id: Date.now(), in_library: false }
+  },
+
+  async wishlistUpdate(itemId, fields) {
+    if (hasBridge()) return window.pywebview.api.wishlist_update(itemId, fields)
+    await delay()
+    return { ok: true }
+  },
+
+  async wishlistRemove(itemId) {
+    if (hasBridge()) return window.pywebview.api.wishlist_remove(itemId)
+    await delay()
+    return { ok: true }
+  },
+
+  // ---------- 更新检查 (v1.1) ----------
+  async checkUpdate(force = false) {
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.check_update(force), 20000, '更新检查')
+    }
+    await delay(500)
+    return { ok: false, current: '1.1.0', latest: null, has_update: false, url: '', error: '(mock)' }
+  },
+
   // ---------- 存档备份 (ludusavi 引擎) ----------
   async backupEngineStatus() {
-    if (hasBridge()) return window.pywebview.api.backup_engine_status()
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_engine_status(), 90000, '引擎检测')
+    }
     await delay()
     return { ok: true, engine_path: null, config_dir: '', backup_root: '', targets: [], error: '引擎未配置(mock)' }
   },
 
   async backupSetTargets(targets) {
-    if (hasBridge()) return window.pywebview.api.backup_set_targets(targets)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_set_targets(targets), 60000, '保存备份目标')
+    }
     await delay()
     return { ok: true, targets: [] }
   },
 
   async backupDetectSavePaths(gameId) {
-    if (hasBridge()) return window.pywebview.api.backup_detect_save_paths(gameId)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_detect_save_paths(gameId), 180000, '存档探测')
+    }
     await delay(300)
     return { ok: true, candidates: [] }
   },
 
   async backupSavePaths(gameId, paths) {
-    if (hasBridge()) return window.pywebview.api.backup_save_paths(gameId, paths)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_save_paths(gameId, paths), 120000, '保存存档路径')
+    }
     await delay()
     return { ok: true, count: 0 }
   },
 
   async backupGetSavePaths(gameId) {
-    if (hasBridge()) return window.pywebview.api.backup_get_save_paths(gameId)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_get_save_paths(gameId), 15000, '读取存档路径')
+    }
     await delay()
     return { ok: true, paths: [] }
   },
 
   async backupGame(gameIds, dryRun = false) {
-    if (hasBridge()) return window.pywebview.api.backup_game(gameIds, dryRun)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_game(gameIds, dryRun), 600000, '存档备份')
+    }
     await delay(800)
     return { ok: true, overall: { totalGames: gameIds.length, totalBytes: 0, processedGames: 0, changedGames: { new: 0, different: 0, same: gameIds.length } }, targets: [] }
   },
 
   async backupAll(dryRun = false) {
-    if (hasBridge()) return window.pywebview.api.backup_all(dryRun)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_all(dryRun), 1800000, '全量备份')
+    }
     await delay(800)
     return { ok: true, overall: { totalGames: 0, totalBytes: 0, processedGames: 0, changedGames: { new: 0, different: 0, same: 0 } }, targets: [] }
   },
 
   async backupRestoreGame(gameId, dryRun = false) {
-    if (hasBridge()) return window.pywebview.api.backup_restore_game(gameId, dryRun)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_restore_game(gameId, dryRun), 600000, '存档恢复')
+    }
     await delay(800)
     return { ok: true, overall: { totalGames: 1, processedGames: 1 } }
   },
 
   async backupList(gameId = null) {
-    if (hasBridge()) return window.pywebview.api.backup_list(gameId)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_list(gameId), 120000, '备份列表')
+    }
     await delay()
     return { ok: true, items: [] }
   },
 
   async backupVersions(gameId) {
-    if (hasBridge()) return window.pywebview.api.backup_versions(gameId)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_versions(gameId), 15000, '版本列表')
+    }
     await delay()
     return { ok: true, items: [] }
   },
 
   // AI 管家操作撤销（回滚 update/cover）
   async undoAction(payload) {
-    if (hasBridge()) return window.pywebview.api.undo_action(payload)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.undo_action(payload), 30000, '撤销操作')
+    }
     return { ok: false, error: '(mock) 无可撤销操作' }
   },
 
@@ -676,25 +740,33 @@ export const api = {
   },
 
   async backupSnapshotGame(gameId) {
-    if (hasBridge()) return window.pywebview.api.backup_snapshot_game(gameId)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_snapshot_game(gameId), 600000, '快照备份')
+    }
     await delay(500)
     return { ok: true, ts: '', bytes: 0 }
   },
 
   async backupSnapshotVersions(gameId) {
-    if (hasBridge()) return window.pywebview.api.backup_snapshot_versions(gameId)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_snapshot_versions(gameId), 15000, '快照版本')
+    }
     await delay()
     return { ok: true, items: [] }
   },
 
   async backupSnapshotRestore(gameId, ts) {
-    if (hasBridge()) return window.pywebview.api.backup_snapshot_restore(gameId, ts)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_snapshot_restore(gameId, ts), 600000, '快照恢复')
+    }
     await delay(500)
     return { ok: true, restored: [] }
   },
 
   async backupSnapshotImport(gameId) {
-    if (hasBridge()) return window.pywebview.api.backup_snapshot_import(gameId)
+    if (hasBridge()) {
+      return withTimeout(window.pywebview.api.backup_snapshot_import(gameId), 600000, '导入存档')
+    }
     await delay(500)
     return { ok: false, error: '(mock) 无文件对话框' }
   },

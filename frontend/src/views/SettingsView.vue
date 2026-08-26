@@ -240,6 +240,22 @@
         <p class="hint">阈值越高越严格：≥阈值自动入库，否则进待确认。</p>
       </section>
 
+      <!-- 关于与更新（v1.1） -->
+      <section class="card" id="about-update">
+        <h2>关于与更新</h2>
+        <div class="row" style="align-items: center">
+          <span>当前版本 <b>v{{ updCurrent }}</b><span v-if="updGit" class="dim"> · {{ updGit }}</span></span>
+          <button class="btn small" :disabled="store.update.checking" @click="doCheckUpdate">
+            {{ store.update.checking ? '检查中…' : '🔄 检查更新' }}
+          </button>
+        </div>
+        <p v-if="updateMsg" class="hint" :class="{ 'upd-new': hasUpdate }">{{ updateMsg }}</p>
+        <p v-if="hasUpdate" class="hint">
+          升级方法：下载新版压缩包，解压覆盖（或并排放置）——数据库、封面、存档备份、配置全在
+          exe 旁边的目录里，不会被覆盖丢失。
+        </p>
+      </section>
+
       <!-- 备份 -->
       <section class="card">
         <h2>存档备份（ludusavi 引擎）</h2>
@@ -408,16 +424,25 @@ const progressPct = computed(() => {
   return total ? Math.round((done / total) * 100) : 0
 })
 
+const appBuildInfo = ref(null)
+
 onMounted(async () => {
-  const info = await api.getAppInfo()
-  bridgeMode.value =
-    info.platform === 'browser-mock'
-      ? '浏览器预览模式（mock 数据）'
-      : `已连接后端 (Python ${info.python})`
-  cfg.value = await api.getConfig()
-  await store.loadRoots()
-  await store.loadMissing()
+  try {
+    const info = await api.getAppInfo()
+    appBuildInfo.value = info.build || null
+    bridgeMode.value =
+      info.platform === 'browser-mock'
+        ? '浏览器预览模式（mock 数据）'
+        : `已连接后端 (Python ${info.python})`
+    cfg.value = await api.getConfig()
+  } catch (e) {
+    // 桥接异常也要给出明确提示，绝不永久卡"加载中"
+    bridgeMode.value = `后端连接失败：${e.message || e}`
+  }
+  try { await store.loadRoots() } catch (e) { /* 非致命 */ }
+  try { await store.loadMissing() } catch (e) { /* 非致命 */ }
   bkRefresh()
+  store.checkUpdate()  // 打开设置页顺带刷新更新状态（后端 24h 缓存，不打爆 API）
 })
 
 async function addRoot() {
@@ -511,8 +536,27 @@ async function testProv(p) {
 }
 
 function removeProv(i) {
+  // 没配 providers 数组（单提供商模式）时没有可删项，别再 TypeError
+  if (!cfg.value?.providers || !cfg.value.providers[i]) return
   cfg.value.providers.splice(i, 1)
   provTest.value = null
+}
+
+// ---- 关于与更新（v1.1） ----
+const updCurrent = computed(() => String(store.update.info?.current || '').replace(/^v/, '') || '1.1.0')
+const updGit = computed(() => appBuildInfo.value?.git || '')
+const hasUpdate = computed(() => !!(store.update.info && store.update.info.has_update))
+const updateMsg = computed(() => {
+  const info = store.update.info
+  if (store.update.checking) return ''
+  if (!info) return ''
+  if (info.has_update) return `🆕 发现新版本 ${info.latest}（当前 v${updCurrent.value}），点击侧栏提示或下方链接获取`
+  if (info.ok) return '已是最新版本 ✓'
+  return `检查失败：${info.error || '网络不可用'}（不影响使用，可稍后再试）`
+})
+
+async function doCheckUpdate() {
+  await store.checkUpdate(true)
 }
 
 function addProv() {

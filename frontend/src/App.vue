@@ -18,6 +18,7 @@
         <MakerView v-else-if="store.currentView === 'maker'" />
         <MakersWallView v-else-if="store.currentView === 'makers'" />
         <PendingView v-else-if="store.currentView === 'pending'" />
+        <WishListView v-else-if="store.currentView === 'wishlist'" />
         <StatsView v-else-if="store.currentView === 'stats'" />
         <SettingsView v-else />
       </div>
@@ -41,6 +42,7 @@ import MakerView from './views/MakerView.vue'
 import MakersWallView from './views/MakersWallView.vue'
 import WorkDetailPanel from './components/WorkDetailPanel.vue'
 import PendingView from './views/PendingView.vue'
+import WishListView from './views/WishListView.vue'
 import StatsView from './views/StatsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
@@ -60,7 +62,7 @@ function onNav(view) {
 
 onMounted(async () => {
   await apiReady() // 等 pywebview 桥接注入完成再加载真实数据（修复 mock 竞态）
-  store.load()
+  store.load().catch(() => {})   // load 内部已记 loadError，这里只兜未捕获
   store.loadRoots()
   store.refreshRunning()
 })

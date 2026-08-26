@@ -1,4 +1,8 @@
-"""启动器：进程管理 + Locale Emulator + 游玩时长统计（session 持久化，重启可补记）。"""
+"""启动器：进程管理 + 游玩时长统计（session 持久化，重启可补记）。
+
+v1.1 注：已移除 Locale Emulator 集成（实践验证不可靠，LEProc 只是启动器、
+秒退且依赖每游戏配置文件，时长统计和启动成功率都无保障）。
+"""
 import os
 import subprocess
 import threading
@@ -10,19 +14,26 @@ RUNNING = {}  # game_id -> {"proc": Popen, "started": iso, "session_id": int}
 _lock = threading.Lock()
 
 
-def find_leproc():
-    for base in [os.environ.get("LOCALAPPDATA", ""),
-                 "C:\\LocaleEmulator",
-                 r"C:\Program Files\Locale Emulator",
-                 r"C:\Program Files (x86)\Locale Emulator"]:
-        p = os.path.join(base, "LEProc.exe")
-        if os.path.exists(p):
-            return p
-    for d in os.environ.get("PATH", "").split(";"):
-        p = os.path.join(d, "LEProc.exe")
-        if os.path.exists(p):
-            return p
-    return None
+def _split_args(args):
+    """把启动参数字符串按空格拆成 argv 列表（双引号包裹的算一个参数）。
+
+    坑：之前整串 append 进 cmd 列表，Popen 会把它当成【一个】带引号的
+    参数传给游戏（"-fullscreen -windowed" 整个是一个 argv），多参数必挂。
+    """
+    out, cur, in_quote = [], "", False
+    for ch in args:
+        if ch == '"':
+            in_quote = not in_quote
+            continue
+        if ch in " \t" and not in_quote:
+            if cur:
+                out.append(cur)
+                cur = ""
+            continue
+        cur += ch
+    if cur:
+        out.append(cur)
+    return out
 
 
 def launch(db, game, cfg=None):
@@ -30,18 +41,10 @@ def launch(db, game, cfg=None):
     if not exe or not os.path.exists(exe):
         return {"ok": False, "error": f"exe 不存在: {exe}"}
     workdir = game.get("workdir") or os.path.dirname(exe)
-    use_le = bool(game.get("use_locale_emu"))
-    if use_le:
-        le = find_leproc()
-        if not le:
-            return {"ok": False, "error": "未找到 LEProc.exe（Locale Emulator）"}
-        cmd = [le, "-run", exe]
-        workdir = os.path.dirname(le)
-    else:
-        cmd = [exe]
+    cmd = [exe]
     args = (game.get("launch_args") or "").strip()
     if args:
-        cmd.append(args)
+        cmd.extend(_split_args(args))
     try:
         p = subprocess.Popen(cmd, cwd=workdir)
     except Exception as e:
@@ -53,7 +56,9 @@ def launch(db, game, cfg=None):
         (game["id"], started))
     with _lock:
         RUNNING[game["id"]] = {"proc": p, "started": started, "session_id": sid}
-    threading.Thread(target=_monitor, args=(game["id"], db, p, started, sid, cfg), daemon=True).start()
+    threading.Thread(target=_monitor,
+                     args=(game["id"], db, p, started, sid, cfg),
+                     daemon=True).start()
     return {"ok": True, "pid": p.pid}
 
 
@@ -105,8 +110,17 @@ def _monitor(game_id, db, proc, started, session_id, cfg=None):
     proc.wait()
     with _lock:
         RUNNING.pop(game_id, None)
-    if time.time() - time.mktime(time.strptime(started, "%Y-%m-%d %H:%M:%S")) < 10:
-        return  # 误启动不计时
+    try:
+        elapsed = time.time() - time.mktime(time.strptime(started, "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, OSError):
+        elapsed = 0
+    if elapsed < 10:
+        # 误启动不计时。必须把 session 关掉（seconds=0）：
+        # 否则留下 ended_at=NULL 的孤儿会话，下次启动 reconcile 会按
+        # "发现时刻-开始时刻" 补记，最长凭空多出 24 小时幽灵时长（v1.1 修）。
+        db.execute("UPDATE sessions SET ended_at=?, seconds=0"
+                   " WHERE id=? AND ended_at IS NULL", (now_iso(), session_id))
+        return
     _finalize(db, game_id, session_id, started)
     # 关闭游戏 → 自动备份存档（开关在设置页：备份 → 关闭游戏时自动备份）
     threading.Thread(target=_auto_snapshot, args=(db, game_id, cfg), daemon=True).start()

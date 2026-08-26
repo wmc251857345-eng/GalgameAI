@@ -505,6 +505,48 @@ h1 { color: var(--text-bright); font-size: 22px; font-weight: 700; }
 .list-time { width: 52px; color: var(--accent); }
 .list-badges { display: flex; gap: 4px; flex-shrink: 0; }
 
+/* ---------- 批量操作（v1.1） ---------- */
+.list-check {
+  color: var(--text-dim); font-size: 15px; width: 20px; text-align: center;
+  flex-shrink: 0; cursor: pointer;
+}
+.list-check.on { color: var(--accent); }
+.list-row.selected { border-color: var(--accent); background: rgba(102, 192, 244, 0.07); }
+.batch-bar {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: 22px; z-index: 60;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--panel-2, #20242e);
+  border: 1px solid var(--accent); border-radius: 12px;
+  padding: 10px 16px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+}
+.bb-count { font-size: 12.5px; font-weight: 600; color: var(--text-bright); white-space: nowrap; }
+.bb-sep { opacity: 0.25; }
+.batch-tag-input {
+  width: 170px; background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text, #e8eaed); padding: 5px 9px; font-size: 12px;
+}
+.my-stars { color: #ffd166; font-size: 11px; letter-spacing: 1px; }
+
+/* ---------- 详情页我的评分（v1.1） ---------- */
+.rate-stars { display: inline-flex; align-items: center; gap: 2px; }
+.star-btn {
+  background: none; border: none; cursor: pointer;
+  font-size: 17px; line-height: 1; padding: 0 1px;
+  color: rgba(255, 255, 255, 0.22);
+  transition: color 0.1s, transform 0.1s;
+}
+.star-btn.on { color: #ffd166; }
+.star-btn:hover { transform: scale(1.2); }
+.rate-num { font-size: 11px; color: var(--text-dim); margin-left: 4px; font-style: normal; }
+.desc.notes {
+  white-space: pre-wrap;
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+}
+
 /* ---------- 收藏 / 警告 / 其他 ---------- */
 .cover-fav {
   position: absolute; top: 8px; right: 8px; z-index: 2;

@@ -22,6 +22,7 @@ const app = createApp(App)
 // 全局图片加载失败降级：远程封面失败/挂起时隐藏 img，插入占位块（防破图/空白）
 app.directive('imgfb', {
   mounted(el, binding) {
+    el._imgfbLastSrc = el.getAttribute('src')
     el.addEventListener('error', () => {
       try {
         if (el._imgfbDone) return
@@ -33,6 +34,20 @@ app.directive('imgfb', {
         if (el.parentNode) el.parentNode.insertBefore(ph, el.nextSibling)
       } catch (e) { /* 占位失败不致命 */ }
     })
+  },
+  updated(el) {
+    // src 换了（换封面/重试）→ 解除隐藏、撤掉占位，给新图重新加载的机会
+    // （旧版一旦失败永久 display:none，封面修好后缩略图也一直灰着直到重启）
+    const src = el.getAttribute('src')
+    if (el._imgfbDone && src !== el._imgfbLastSrc) {
+      el._imgfbDone = false
+      el.style.display = ''
+      try {
+        const ph = el.nextElementSibling
+        if (ph && ph.classList && ph.classList.contains('img-fb')) ph.remove()
+      } catch (e) { /* 占位清理失败不致命 */ }
+    }
+    el._imgfbLastSrc = src
   },
 })
 

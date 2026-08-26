@@ -11,7 +11,8 @@ import time
 from . import launcher, paths
 from .utils import normalize, now_iso
 
-VERSION = "0.3.0"
+VERSION = "1.1.0"
+REPO_API_LATEST = "https://api.github.com/repos/wmc251857345-eng/GalgameAI/releases/latest"
 BASE_URL = "http://127.0.0.1:0"  # app.py 启动 HTTP 服务后写入
 
 _scan_thread = None
@@ -339,13 +340,18 @@ class JsApi:
         }
 
     def list_games(self, limit=1000, offset=0, sort="title", query=""):
-        allowed = {"title", "released", "rating", "playtime_seconds", "last_played"}
-        order = sort if sort in allowed else "title"
+        allowed = {"title", "released", "rating", "playtime_seconds", "last_played",
+                   "user_rating"}
+        order = "title" if sort not in allowed else sort
+        if order == "user_rating":
+            order = "user_rating DESC, rating"  # 用户评分优先，并列看外部评分
         sql = "SELECT * FROM games"
         params = []
         if query:
-            sql += " WHERE title LIKE ? OR title_en LIKE ? OR title_jp LIKE ? OR maker LIKE ?"
-            params = [f"%{query}%"] * 4
+            sql += (" WHERE title LIKE ? OR title_en LIKE ? OR title_jp LIKE ?"
+                    " OR title_zh LIKE ? OR maker LIKE ? OR description LIKE ?"
+                    " OR notes LIKE ?")
+            params = [f"%{query}%"] * 7
         sql += f" ORDER BY {order} LIMIT ? OFFSET ?"
         params += [int(limit), int(offset)]
         rows = self._db.query(sql, params)
@@ -400,6 +406,91 @@ class JsApi:
         self._db.execute("UPDATE games SET play_state=? WHERE id=?", (st, gid))
         return {"ok": True, "play_state": st,
                 "label": self.PLAY_STATES[st]}
+
+    # ---------- 批量操作（v1.1） ----------
+    def batch_update(self, game_ids, action, value=None):
+        """库页多选批量操作。
+
+        action:
+          play_state  value=0/1/2      设游玩进度
+          favorite    value=true/false 设/取消收藏
+          rate        value=0~5        设用户评分（0=清除）
+          tag_add     value=[标签名]   合并追加标签（不清除原有标签）
+          delete      value 无         移出库（不动磁盘文件）
+        返回 {ok, updated, errors:[...]}
+        """
+        ids = []
+        for x in (game_ids or []):
+            try:
+                gid = int(x)
+            except (TypeError, ValueError):
+                continue
+            if gid > 0:
+                ids.append(gid)
+        if not ids:
+            return {"ok": False, "error": "未选择游戏"}
+        errors, updated = [], 0
+
+        def exists(gid):
+            return self._db.query_one("SELECT id FROM games WHERE id=?", (gid,))
+
+        if action == "play_state":
+            st = int(value) if value is not None else -1
+            if st not in self.PLAY_STATES:
+                return {"ok": False, "error": "状态值非法"}
+            for gid in ids:
+                if not exists(gid):
+                    errors.append(f"id={gid} 不存在")
+                    continue
+                self._db.execute("UPDATE games SET play_state=? WHERE id=?", (st, gid))
+                updated += 1
+        elif action == "favorite":
+            fv = 1 if (value is True or value == 1 or value == "true") else 0
+            for gid in ids:
+                if not exists(gid):
+                    errors.append(f"id={gid} 不存在")
+                    continue
+                self._db.execute("UPDATE games SET favorite=? WHERE id=?", (fv, gid))
+                updated += 1
+        elif action == "rate":
+            try:
+                stars = max(0, min(5, int(value)))
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "评分值非法（0~5）"}
+            for gid in ids:
+                if not exists(gid):
+                    errors.append(f"id={gid} 不存在")
+                    continue
+                self._db.execute("UPDATE games SET user_rating=? WHERE id=?", (stars, gid))
+                updated += 1
+        elif action == "tag_add":
+            tags = [str(t).strip() for t in (value or []) if str(t).strip()]
+            if not tags:
+                return {"ok": False, "error": "标签为空"}
+            for t in tags:
+                self._db.execute(
+                    "INSERT OR IGNORE INTO tags (name, category) VALUES (?, 'manual')", (t,))
+            tag_rows = self._db.query(
+                "SELECT id FROM tags WHERE name IN (%s)" % ",".join("?" * len(tags)), tags)
+            for gid in ids:
+                if not exists(gid):
+                    errors.append(f"id={gid} 不存在")
+                    continue
+                for r in tag_rows:
+                    self._db.execute(
+                        "INSERT OR IGNORE INTO game_tags (game_id, tag_id, source)"
+                        " VALUES (?,?,'manual')", (gid, r["id"]))
+                updated += 1
+        elif action == "delete":
+            for gid in ids:
+                if not exists(gid):
+                    continue
+                self.remove_game(gid)  # 复用单删逻辑（清关联表+封面缓存）
+                updated += 1
+        else:
+            return {"ok": False, "error": f"未知操作: {action}"}
+        return {"ok": True, "action": action, "updated": updated,
+                "errors": errors[:10]}
 
     def get_game(self, game_id):
         g = self._db.query_one("SELECT * FROM games WHERE id=?", (int(game_id),))
@@ -671,8 +762,8 @@ class JsApi:
     EDITABLE = {
         "title", "title_jp", "title_en", "title_zh", "maker", "brand",
         "released", "rating", "length_minutes", "length_level", "description",
-        "exe_path", "workdir", "launch_args", "use_locale_emu", "hanhua", "status",
-        "favorite", "vndb_id", "steam_id",
+        "exe_path", "workdir", "launch_args", "hanhua", "status",
+        "favorite", "vndb_id", "steam_id", "notes", "user_rating",
     }
 
     def update_game(self, game_id, fields):
@@ -693,14 +784,19 @@ class JsApi:
             clean[k] = v
         if not clean:
             return {"ok": False, "error": "没有可更新的字段"}
-        clean.setdefault("status", 2)  # 手动编辑即视为用户确认入库
+        # 仅评分/笔记的轻量更新不改状态、不算"手动编辑"
+        # （在库页快速打星不应把待确认游戏悄悄变成已入库）
+        light = set(clean) <= {"user_rating", "notes"}
+        if not light:
+            clean.setdefault("status", 2)  # 手动编辑即视为用户确认入库
         # 制作组名自动锚定：手动改名也统一到规范名（同一厂商不再出现多写法）
         if clean.get("maker"):
             from . import makers
             clean["maker"] = makers.canonical(self._db, clean["maker"])
         sets = ", ".join(f"{k}=?" for k in clean)
         params = list(clean.values()) + [gid]
-        self._db.execute(f"UPDATE games SET {sets}, source='manual' WHERE id=?", params)
+        suffix = "" if light else ", source='manual'"
+        self._db.execute(f"UPDATE games SET {sets}{suffix} WHERE id=?", params)
         # 用户手动指定/改了 vndb_id → 写入匹配记忆（下次重扫直接命中）
         if clean.get("vndb_id") and game.get("path"):
             fk = normalize(os.path.basename(game["path"]))
@@ -895,7 +991,8 @@ class JsApi:
         gid = int(game_id)
         g = self._db.query_one("SELECT cover_path FROM games WHERE id=?", (gid,))
         for t in ("match_candidates", "game_tags", "sessions", "staff",
-                  "screenshots", "analysis_jobs"):
+                  "screenshots", "analysis_jobs",
+                  "backup_history", "backup_versions"):  # 备份元数据一并清理（v1.1）
             self._db.execute(f"DELETE FROM {t} WHERE game_id=?", (gid,))
         self._db.execute("DELETE FROM games WHERE id=?", (gid,))
         # 删除该游戏的封面缓存文件（仅限 cache/covers 内）
@@ -1373,13 +1470,17 @@ class JsApi:
         return B.write_custom_games(self._cfg, entries)
 
     def backup_save_paths(self, game_id, paths_):
-        """配置某游戏的存档路径列表（custom games files）。"""
+        """配置某游戏的存档路径列表（custom games files）。
+
+        用 UPSERT：旧版 INSERT OR REPLACE 会先删整行，把已累计的
+        备份次数/大小/时间全部清零（v1.1 修）。
+        """
         from . import backup as B
         B.ensure_engine_config(self._cfg)
         self._db.execute(
-            "INSERT OR REPLACE INTO backup_history (game_id, engine_name, save_paths) "
-            "VALUES (?, ?, ?)",
-            (int(game_id), None, json.dumps(paths_, ensure_ascii=False)))
+            "INSERT INTO backup_history (game_id, save_paths) VALUES (?, ?)"
+            " ON CONFLICT(game_id) DO UPDATE SET save_paths=excluded.save_paths",
+            (int(game_id), json.dumps(paths_, ensure_ascii=False)))
         return self.backup_sync_configs()
 
     def backup_get_save_paths(self, game_id):
@@ -1401,18 +1502,19 @@ class JsApi:
         from . import backup as B
         B.ensure_engine_config(self._cfg)
         self.backup_sync_configs()
-        names = []
+        pairs = []  # (gid, title)：先配对再备份，防止个别 id 失效时 zip 错位（v1.1 修）
         for gid in game_ids:
             row = self._db.query_one("SELECT title FROM games WHERE id=?", (int(gid),))
             if row:
-                names.append(row["title"])
-        if not names:
+                pairs.append((int(gid), row["title"]))
+        if not pairs:
             return {"ok": False, "error": "没有找到对应游戏"}
+        names = [t for _, t in pairs]
         result = B.backup(self._cfg, games=names, dry_run=dry_run)
         if not result.get("ok"):
             return result
         # 更新元数据
-        for gid, name in zip(game_ids, names):
+        for gid, name in pairs:
             g_res = result.get("games", {}).get(name, {})
             if not dry_run and g_res.get("decision") == "Processed":
                 ts = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -2174,6 +2276,121 @@ class JsApi:
         rows = self._db.query("SELECT * FROM maker_follows ORDER BY created_at DESC")
         return {"ok": True, "follows": rows}
 
+    # ---------- 想玩清单（v1.1） ----------
+    def wishlist_list(self):
+        return {"ok": True, "items": self._db.query(
+            "SELECT * FROM wishlist ORDER BY id DESC")}
+
+    def wishlist_add(self, title, note="", vndb_id=""):
+        title = (title or "").strip()
+        if not title:
+            return {"ok": False, "error": "标题不能为空"}
+        dup = self._db.query_one(
+            "SELECT id FROM wishlist WHERE title=? COLLATE NOCASE", (title,))
+        if dup:
+            return {"ok": False, "error": f"想玩清单里已有「{title}」"}
+        wid = self._db.execute(
+            "INSERT INTO wishlist (title, note, vndb_id, created_at) VALUES (?,?,?,?)",
+            (title, (note or "").strip() or None,
+             (vndb_id or "").strip() or None, now_iso()))
+        in_library = self._db.query_one(
+            "SELECT id, title FROM games WHERE title=? COLLATE NOCASE", (title,))
+        return {"ok": True, "id": wid,
+                "in_library": bool(in_library)}  # 提示：其实已经在库里了
+
+    def wishlist_update(self, item_id, fields):
+        """编辑备注/标题。fields: {title?, note?}"""
+        wid = int(item_id)
+        row = self._db.query_one("SELECT id FROM wishlist WHERE id=?", (wid,))
+        if not row:
+            return {"ok": False, "error": "条目不存在"}
+        clean = {}
+        f = fields or {}
+        if "title" in f:
+            t = str(f["title"] or "").strip()
+            if not t:
+                return {"ok": False, "error": "标题不能为空"}
+            clean["title"] = t
+        if "note" in f:
+            clean["note"] = str(f["note"] or "").strip() or None
+        if not clean:
+            return {"ok": False, "error": "没有可更新的字段"}
+        sets = ", ".join(f"{k}=?" for k in clean)
+        self._db.execute(f"UPDATE wishlist SET {sets} WHERE id=?",
+                         list(clean.values()) + [wid])
+        return {"ok": True}
+
+    def wishlist_remove(self, item_id):
+        self._db.execute("DELETE FROM wishlist WHERE id=?", (int(item_id),))
+        return {"ok": True}
+
+    # ---------- 更新检查（v1.1） ----------
+    _UPDATE_TTL = 24 * 3600  # 24h 缓存
+
+    @staticmethod
+    def _ver_tuple(v):
+        try:
+            return tuple(int(x) for x in str(v or "").lstrip("vV ").split("."))
+        except ValueError:
+            return (0,)
+
+    def check_update(self, force=False):
+        """检查 GitHub Releases 是否有新版（24h 缓存，失败静默）。
+
+        返回 {ok, current, latest, has_update, url, checked_at, error?}
+        """
+        import json as _json
+        now = time.time()
+        if not force:
+            cached = self._db.query_one(
+                "SELECT value FROM settings WHERE key='update_check'")
+            if cached and cached.get("value"):
+                try:
+                    c = _json.loads(cached["value"])
+                    if now - float(c.get("ts", 0)) < self._UPDATE_TTL:
+                        c["cached"] = True
+                        c.setdefault("current", VERSION)
+                        return c
+                except (ValueError, TypeError):
+                    pass
+        result = {"ok": False, "current": VERSION, "latest": None,
+                  "has_update": False, "url": "", "checked_at": now_iso()}
+        s = None
+        try:
+            from .utils import http_session
+            s = http_session(self._cfg, proxy_ok=True)
+            r = s.get(REPO_API_LATEST, timeout=8,
+                      headers={"Accept": "application/vnd.github+json"})
+            if r.status_code == 200:
+                data = r.json() or {}
+                tag = (data.get("tag_name") or "").strip()
+                result.update({
+                    "ok": True, "latest": tag or None,
+                    "has_update": bool(tag) and
+                    self._ver_tuple(tag) > self._ver_tuple(VERSION),
+                    "url": data.get("html_url") or
+                    "https://github.com/wmc251857345-eng/GalgameAI/releases",
+                })
+            else:
+                result["error"] = f"HTTP {r.status_code}"
+        except Exception as e:
+            result["error"] = str(e)[:120]
+        finally:
+            if s is not None:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+        try:  # 无论成败都记一次时间，失败后 10 分钟内不反复打 API
+            payload = dict(result)
+            payload["ts"] = now if result.get("ok") else now - self._UPDATE_TTL + 600
+            self._db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('update_check', ?)",
+                (_json.dumps(payload, ensure_ascii=False),))
+        except Exception:
+            pass
+        return result
+
     # ---------- AI 管家对话 ----------
     def chat_send(self, message, context_game_id=None, image=None):
         """发送一条消息给 AI 管家（工具调用式 + 可选图片识图），返回回复+动作记录。
@@ -2187,9 +2404,11 @@ class JsApi:
         self._db.execute(
             "INSERT INTO chat_messages (role, content, image, created_at) VALUES ('user',?,?,?)",
             (message, image or None, now_iso()))
+        # OFFSET 1 跳过刚插入的本条消息（否则它会以 history[0] + message 双重出现）
         history = [{"role": r["role"], "content": r["content"], "image": r.get("image")}
                    for r in self._db.query(
-                       "SELECT role, content, image FROM chat_messages ORDER BY id DESC LIMIT 12")][::-1]
+                       "SELECT role, content, image FROM chat_messages"
+                       " ORDER BY id DESC LIMIT 12 OFFSET 1")][::-1]
         result = self._agent.chat(message, context_game_id=context_game_id,
                                   history=history, image=image)
         reply = (result.get("reply") or "").strip()
@@ -2260,8 +2479,3 @@ class JsApi:
 
     def get_running(self):
         return launcher.running_ids()
-
-    def set_locale_emu(self, game_id, enabled):
-        self._db.execute("UPDATE games SET use_locale_emu=? WHERE id=?",
-                         (1 if enabled else 0, int(game_id)))
-        return {"ok": True}
