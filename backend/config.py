@@ -16,6 +16,7 @@ DEFAULTS = {
     },
     "providers": [],  # 提供商池（多 AI 轮询）：[{name, model, api_key, base_url, enabled, vision, search}]
     "proxy": {"enabled": False, "url": "http://127.0.0.1:7897"},
+    "locale_emulator": {"path": ""},  # LEProc.exe 绝对路径（空=自动探测 G:\tools\LocaleEmulator）
     "vndb_token": "",
     "library_roots": [],
     "ui": {"theme": "dark", "language": "zh-CN"},

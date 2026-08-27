@@ -11,7 +11,7 @@ import time
 from . import launcher, paths
 from .utils import normalize, now_iso
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 REPO_API_LATEST = "https://api.github.com/repos/wmc251857345-eng/GalgameAI/releases/latest"
 BASE_URL = "http://127.0.0.1:0"  # app.py 启动 HTTP 服务后写入
 
@@ -762,7 +762,7 @@ class JsApi:
     EDITABLE = {
         "title", "title_jp", "title_en", "title_zh", "maker", "brand",
         "released", "rating", "length_minutes", "length_level", "description",
-        "exe_path", "workdir", "launch_args", "hanhua", "status",
+        "exe_path", "workdir", "launch_args", "region_locale", "hanhua", "status",
         "favorite", "vndb_id", "steam_id", "notes", "user_rating",
     }
 
@@ -2483,3 +2483,23 @@ class JsApi:
 
     def get_running(self):
         return launcher.running_ids()
+
+    def locale_emulator_status(self):
+        """转区启动可用性：LEProc 路径 + 已配置的 Profile 列表（前端下拉用）。"""
+        import re
+        p = launcher.find_le_proc(self._cfg)
+        out = {"available": bool(p), "le_proc": p, "profiles": []}
+        if p:
+            import os
+            f = os.path.join(os.path.dirname(p), "LEConfig.xml")
+            if os.path.exists(f):
+                try:
+                    xml = open(f, encoding="utf-8", errors="ignore").read()
+                    for m in re.finditer(
+                            r'<Profile\s+Name="([^"]*)"[^>]*>\s*'
+                            r'<Parameter>[^<]*</Parameter>\s*'
+                            r'<Location>([^<]*)</Location>', xml):
+                        out["profiles"].append(m.group(2))
+                except OSError:
+                    pass
+        return out

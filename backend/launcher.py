@@ -1,7 +1,10 @@
 """启动器：进程管理 + 游玩时长统计（session 持久化，重启可补记）。
 
-v1.1 注：已移除 Locale Emulator 集成（实践验证不可靠，LEProc 只是启动器、
-秒退且依赖每游戏配置文件，时长统计和启动成功率都无保障）。
+v1.2：恢复 Locale Emulator 转区启动（v1.1 曾移除）。
+旧结论"LEProc 秒退、时长无保障"的解法：LEProc 只是引导进程，真正的游戏
+进程由它拉起后独立存活 → 转区启动时不靠 Popen.wait，改用 psutil 按
+exe 名轮询游戏进程（复用 _exe_alive 机制），出现前等 60s、消失后结算。
+转区是可选的：每游戏 region_locale 为空 = 普通直启（原有路径不变）。
 """
 import os
 import subprocess
@@ -10,8 +13,29 @@ import time
 
 from .utils import now_iso
 
-RUNNING = {}  # game_id -> {"proc": Popen, "started": iso, "session_id": int}
+RUNNING = {}  # game_id -> {"proc": Popen|None, "started": iso, "session_id": int, "le": bool}
 _lock = threading.Lock()
+
+# LEProc.exe 默认候选位置（config locale_emulator.path 优先）
+_LE_CANDIDATES = [
+    r"G:\tools\LocaleEmulator\LEProc.exe",
+    r"C:\Program Files\Locale Emulator\LEProc.exe",
+    r"C:\Program Files (x86)\Locale Emulator\LEProc.exe",
+]
+
+
+def find_le_proc(cfg=None):
+    """返回可用的 LEProc.exe 绝对路径，找不到返回 None。"""
+    try:
+        p = (cfg.get("locale_emulator.path") or "").strip()
+        if p and os.path.exists(p):
+            return p
+    except Exception:
+        pass
+    for c in _LE_CANDIDATES:
+        if os.path.exists(c):
+            return c
+    return None
 
 
 def _split_args(args):
@@ -41,6 +65,29 @@ def launch(db, game, cfg=None):
     if not exe or not os.path.exists(exe):
         return {"ok": False, "error": f"exe 不存在: {exe}"}
     workdir = game.get("workdir") or os.path.dirname(exe)
+    locale = (game.get("region_locale") or "").strip()
+    le_proc = find_le_proc(cfg) if locale else None
+    started = now_iso()
+    if locale:
+        if not le_proc:
+            return {"ok": False, "error": "未找到 Locale Emulator(LEProc.exe)：请在设置页配置路径"}
+        # 转区启动：LEProc 无参形式 = 应用自身 .le.config → 首个全局Profile → 默认ja-JP
+        # 指定 locale 用 -runas <profile guid> <exe>；无对应 profile 时退回默认（多数用户装了 ja-JP 全局）
+        guid = _le_profile_guid(locale, le_proc)
+        cmd = [le_proc] + (["-runas", guid] if guid else []) + [exe]
+        try:
+            p = subprocess.Popen(cmd, cwd=workdir)
+        except Exception as e:
+            return {"ok": False, "error": f"LEProc 启动失败: {e}"}
+        sid = _new_session(db, game["id"], started)
+        with _lock:
+            RUNNING[game["id"]] = {"proc": None, "started": started, "session_id": sid,
+                                   "le": True, "exe": exe}
+        # LEProc 秒退，游戏进程异步拉起 → psutil 轮询跟踪
+        threading.Thread(target=_monitor_le, args=(game["id"], db, exe, started, sid, cfg),
+                         daemon=True).start()
+        return {"ok": True, "le": True, "note": f"转区 {locale} 启动中（LEProc 引导，游戏稍后弹出）"}
+    # 普通直启（原路径）
     cmd = [exe]
     args = (game.get("launch_args") or "").strip()
     if args:
@@ -49,17 +96,65 @@ def launch(db, game, cfg=None):
         p = subprocess.Popen(cmd, cwd=workdir)
     except Exception as e:
         return {"ok": False, "error": str(e)}
-    started = now_iso()
-    # session 先落库（ended_at=NULL 表示进行中，应用崩溃/关闭后启动时可补记）
-    sid = db.execute(
-        "INSERT INTO sessions (game_id, started_at, ended_at, seconds) VALUES (?,?,NULL,0)",
-        (game["id"], started))
+    sid = _new_session(db, game["id"], started)
     with _lock:
-        RUNNING[game["id"]] = {"proc": p, "started": started, "session_id": sid}
+        RUNNING[game["id"]] = {"proc": p, "started": started, "session_id": sid, "le": False}
     threading.Thread(target=_monitor,
                      args=(game["id"], db, p, started, sid, cfg),
                      daemon=True).start()
     return {"ok": True, "pid": p.pid}
+
+
+def _new_session(db, game_id, started):
+    return db.execute(
+        "INSERT INTO sessions (game_id, started_at, ended_at, seconds) VALUES (?,?,NULL,0)",
+        (game_id, started))
+
+
+def _le_profile_guid(locale, le_proc=None):
+    """LEProc 同目录 LEConfig.xml 里找 Location 匹配的 Profile guid。
+
+    没有匹配 profile 返回 None → launch 退回 LEProc 默认 profile
+    （应用自身 .le.config → 首个全局 Profile → 默认 ja-JP）。
+    """
+    try:
+        f = os.path.join(os.path.dirname(le_proc), "LEConfig.xml") if le_proc else None
+        if not f or not os.path.exists(f):
+            return None
+        import re
+        xml = open(f, encoding="utf-8", errors="ignore").read()
+        m = re.search(
+            r'<Profile\s+Name="[^"]*"\s+Guid="([^"]+)"[^>]*>.*?<'
+            r'Location>\s*' + re.escape(locale) + r'\s*<', xml, re.S)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def _monitor_le(game_id, db, exe, started, session_id, cfg=None):
+    """转区启动监控：LEProc 秒退后游戏进程异步出现。
+    前 60s 内没出现 → 视为启动失败（关 session 不计时长）；
+    出现后按进程名轮询，消失时结算时长。"""
+    deadline = time.time() + 60
+    while not _exe_alive(exe) and time.time() < deadline:
+        time.sleep(2)
+    if not _exe_alive(exe):
+        db.execute("UPDATE sessions SET ended_at=?, seconds=0"
+                   " WHERE id=? AND ended_at IS NULL", (now_iso(), session_id))
+        with _lock:
+            RUNNING.pop(game_id, None)
+        return
+    _poll_le(game_id, db, exe, started, session_id, cfg)
+
+
+def _poll_le(game_id, db, exe, started, session_id, cfg=None):
+    """轮询游戏进程（进程名），消失后结算时长 + 自动备份存档。"""
+    while _exe_alive(exe):
+        time.sleep(30)
+    _finalize(db, game_id, session_id, started)
+    with _lock:
+        RUNNING.pop(game_id, None)
+    threading.Thread(target=_auto_snapshot, args=(db, game_id, cfg), daemon=True).start()
 
 
 def _finalize(db, game_id, session_id, started, ended=None, seconds=None, estimated=False):
@@ -132,8 +227,26 @@ def stop(game_id):
     if not info:
         return {"ok": False, "error": "该游戏未在运行"}
     try:
-        info["proc"].terminate()
-        return {"ok": True}
+        if info.get("proc") is not None:
+            # 普通直启：杀整个进程树（游戏+子进程）
+            try:
+                import psutil
+                psutil.Process(info["proc"].pid).kill()
+            except Exception:
+                info["proc"].terminate()
+            return {"ok": True}
+        # 转区启动（无父进程句柄）：按 exe 名杀
+        exe = info.get("exe") or ""
+        if exe:
+            name = os.path.basename(exe).lower()
+            import psutil
+            for p in psutil.process_iter(["name"]):
+                if (p.info.get("name") or "").lower() == name:
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+        return {"ok": True, "note": "已发送终止（转区游戏按进程名结束）"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

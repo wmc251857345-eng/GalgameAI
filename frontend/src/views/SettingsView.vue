@@ -95,6 +95,19 @@
         </div>
       </section>
 
+      <!-- 转区启动 -->
+      <section class="card">
+        <h2>转区启动（Locale Emulator）</h2>
+        <div class="row">
+          <label>LEProc.exe 路径</label>
+          <input v-model="cfg.locale_emulator.path" placeholder="留空=自动探测 G:\tools\LocaleEmulator" />
+        </div>
+        <p class="hint">
+          游戏详情页可给每款游戏选「转区运行」（如日文 ja-JP）；不选则直接启动。
+          需要 LE 已安装（LEProc.exe + LEConfig.xml 同目录）。
+        </p>
+      </section>
+
       <!-- 游戏库 -->
       <section class="card">
         <h2>游戏库目录</h2>
@@ -651,6 +664,7 @@ async function save() {
     await api.setConfig('provider', cfg.value.provider)
     await api.setConfig('providers', cfg.value.providers || [])
     await api.setConfig('proxy', cfg.value.proxy)
+    await api.setConfig('locale_emulator', cfg.value.locale_emulator || { path: '' })
     await api.setConfig('analysis', cfg.value.analysis)
     await api.setConfig('backup', cfg.value.backup)
     await api.setConfig('vndb_token', cfg.value.vndb_token || '')

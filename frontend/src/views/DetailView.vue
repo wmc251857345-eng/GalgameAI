@@ -71,6 +71,12 @@
             <tr><td>启动 exe</td><td><input v-model="form.exe_path" placeholder="exe 绝对路径" /></td></tr>
             <tr><td>工作目录</td><td><input v-model="form.workdir" placeholder="可选，默认 exe 所在目录" /></td></tr>
             <tr><td>启动参数</td><td><input v-model="form.launch_args" placeholder="可选" /></td></tr>
+            <tr><td>转区运行</td><td>
+              <select v-model="form.region_locale" style="width:auto">
+                <option v-for="o in localeOpts" :key="o" :value="o.v">{{ o.t }}</option>
+              </select>
+              <span v-if="!leStatus.available" class="hint" style="margin-left:8px">未检测到 Locale Emulator（设置页可指定 LEProc.exe 路径）</span>
+            </td></tr>
             <tr><td>汉化</td><td><input v-model="form.hanhua" type="checkbox" style="width:auto;height:auto;accent-color:var(--accent)" /></td></tr>
             <tr><td>我的评分</td><td>
               <select v-model.number="form.user_rating" style="width:auto">
@@ -275,7 +281,7 @@
 </template>
 
 <script setup>
-import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useLibraryStore } from '../stores/library.js'
 import { api } from '../api.js'
 
@@ -296,6 +302,25 @@ const form = reactive({})
 const editTags = ref([])
 const tagInput = ref('')
 const coverUrlInput = ref('')
+
+// ---- 转区启动（Locale Emulator，可选）----
+const leStatus = ref({ available: false, le_proc: null, profiles: [] })
+const LOCALE_NAMES = { 'ja-JP': '日文 ja-JP', 'ko-KR': '韩文 ko-KR', 'zh-TW': '繁中 zh-TW', 'zh-CN': '简中 zh-CN' }
+const localeOpts = computed(() => {
+  const opts = [{ v: '', t: '不转区（默认）' }]
+  const base = leStatus.value.available
+    ? (leStatus.value.profiles?.length ? leStatus.value.profiles : Object.keys(LOCALE_NAMES))
+    : Object.keys(LOCALE_NAMES)
+  for (const l of base) {
+    if (!l) continue
+    if (opts.some(o => o.v === l)) continue
+    opts.push({ v: l, t: LOCALE_NAMES[l] || l })
+  }
+  return opts
+})
+onMounted(async () => {
+  try { leStatus.value = await api.localeEmulatorStatus() } catch (e) { /* 非桥接环境忽略 */ }
+})
 
 const lengthText = computed(() => {
   if (!g.value) return ''
@@ -338,6 +363,7 @@ function startEdit() {
     title_en: d.title_en || '', maker: d.maker || '', released: d.released || '',
     rating: d.rating_disp, length_minutes: d.length_minutes, description: d.description || '',
     exe_path: d.exe_path || '', workdir: d.workdir || '', launch_args: d.launch_args || '',
+    region_locale: d.region_locale || '',
     hanhua: !!d.hanhua,
     user_rating: d.user_rating || 0,
     notes: d.notes || '',

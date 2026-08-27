@@ -264,6 +264,12 @@ export const api = {
     return {}
   },
 
+  // 转区启动（Locale Emulator）可用性
+  async localeEmulatorStatus() {
+    if (hasBridge()) return withTimeout(window.pywebview.api.locale_emulator_status(), 10000, '转区状态')
+    return { available: false, le_proc: null, profiles: [] }
+  },
+
   // 手动编辑
   async updateGame(id, fields) {
     if (hasBridge()) return withTimeout(window.pywebview.api.update_game(id, fields), 30000, '保存资料')

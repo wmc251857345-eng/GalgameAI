@@ -216,6 +216,9 @@ class Database:
             conn.execute("ALTER TABLE games ADD COLUMN steam_id TEXT")
         if "cover_orig_path" not in cols:
             conn.execute("ALTER TABLE games ADD COLUMN cover_orig_path TEXT")
+        if "region_locale" not in cols:
+            # 转区启动（Locale Emulator）：ja-JP/ko-KR/zh-TW/zh-CN/''，''=不转区
+            conn.execute("ALTER TABLE games ADD COLUMN region_locale TEXT")
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(match_cache)")}
         if "provider" not in cols:
             conn.execute("ALTER TABLE match_cache ADD COLUMN provider TEXT DEFAULT 'vndb'")
